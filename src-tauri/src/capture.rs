@@ -42,11 +42,12 @@ pub fn capture_region(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>
         .capture()
         .map_err(|e| CaptureError::ScreenshotFailed(e.to_string()))?;
 
-    // Convert screenshots::Image to image::DynamicImage
-    // screenshots::Image exposes .rgba() for raw RGBA bytes and .width()/.height()
+    // Convert screenshots ImageBuffer to our image crate's DynamicImage.
+    // screenshots 0.8 returns image::RgbaImage directly; bridge via raw bytes
+    // in case the re-exported image version differs from ours.
     let w = full.width();
     let h = full.height();
-    let rgba_data = full.rgba().to_vec();
+    let rgba_data = full.into_raw();
     let rgba_img = RgbaImage::from_raw(w, h, rgba_data)
         .ok_or(CaptureError::EncodeFailed("Failed to create RGBA image from buffer".into()))?;
     let img = DynamicImage::ImageRgba8(rgba_img);

@@ -1,4 +1,4 @@
-use redis::{Client, Commands};
+use redis::Client;
 use crate::compare::{DepthSnapshot, TruthLevel};
 
 #[derive(Debug)]

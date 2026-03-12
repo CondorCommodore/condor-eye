@@ -1,7 +1,5 @@
 use base64::Engine;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-
 use crate::compare::ExtractionResult;
 
 /// Error types for Claude API extraction.

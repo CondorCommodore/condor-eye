@@ -7,10 +7,10 @@ mod config;
 mod truth;
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-use compare::{ComparisonReport, ExtractionResult, Status};
+use compare::{ComparisonReport, Status};
 use config::{AppConfig, ExtractionProfile};
 
 /// Shared app state managed by Tauri.
@@ -40,9 +40,8 @@ async fn capture_and_compare(
         .cloned()
         .ok_or_else(|| format!("Profile '{}' not found", profile_name))?;
 
-    // 1. Hide frame (opacity → 0 to prevent capturing our own border)
-    //    set_opacity avoids the Z-order thrashing that hide()/show() causes.
-    let _ = window.set_opacity(0.0);
+    // 1. Hide frame to prevent capturing our own border
+    let _ = window.hide();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // 2. Get window position/size.
@@ -66,7 +65,7 @@ async fn capture_and_compare(
     .map_err(|e| format!("Capture: {}", e))?;
 
     // 4. Restore frame
-    let _ = window.set_opacity(1.0);
+    let _ = window.show();
 
     // 5. Send to Claude API (async — profile provides the prompt)
     let start = std::time::Instant::now();
@@ -166,7 +165,7 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState {
             config: Mutex::new(app_config),
             profiles: Mutex::new(profiles),

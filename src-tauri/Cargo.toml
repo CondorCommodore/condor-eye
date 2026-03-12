@@ -5,7 +5,7 @@ edition = "2021"
 description = "Visual data validator using Claude AI vision"
 
 [dependencies]
-tauri = { version = "2", features = ["transparent"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

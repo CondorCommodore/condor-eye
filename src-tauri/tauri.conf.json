@@ -4,8 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.condor.visual-validator",
   "build": {
-    "frontendDist": "../src",
-    "withGlobalTauri": true
+    "frontendDist": "../src"
   },
   "app": {
     "windows": [
