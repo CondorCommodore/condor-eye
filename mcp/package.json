@@ -1,0 +1,9 @@
+{
+  "name": "condor-eye-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Condor Eye — gives Claude agents the ability to see the screen",
+  "type": "module",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.12.1" }
+}
