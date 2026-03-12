@@ -292,16 +292,20 @@ fn main() {
                 Code::KeyC,
             );
             let handle = app.handle().clone();
-            app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, _event| {
+            if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, _event| {
                 // Emit event to frontend to trigger capture
                 if let Some(window) = handle.get_webview_window("main") {
                     let _ = window.emit("trigger-capture", ());
                 }
-            })?;
+            }) {
+                eprintln!("Warning: failed to register Ctrl+Shift+C shortcut: {}. Use the UI button instead.", e);
+            }
             // Start Condor Eye HTTP API server
             let ce_config = app.state::<AppState>().config.lock().unwrap().clone();
+            // Bind 0.0.0.0 by default — required for WSL2→Windows access.
+            // WSL2 can't reach Windows 127.0.0.1 (separate network namespace).
             let ce_bind = std::env::var("CONDOR_EYE_BIND")
-                .unwrap_or_else(|_| "127.0.0.1".to_string());
+                .unwrap_or_else(|_| "0.0.0.0".to_string());
             let ce_port = std::env::var("CONDOR_EYE_PORT")
                 .unwrap_or_else(|_| "9050".to_string())
                 .parse::<u16>()

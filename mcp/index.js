@@ -7,7 +7,19 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-const DEFAULT_HOST = "localhost:9050";
+// Detect WSL and use the Windows host gateway IP instead of localhost.
+// WSL2's localhost doesn't route to Windows — need the Hyper-V gateway.
+import { execFileSync } from "child_process";
+import { readFileSync } from "fs";
+function getDefaultHost() {
+  try {
+    const route = execFileSync("ip", ["route", "show", "default"], { encoding: "utf-8" });
+    const match = route.match(/via\s+([\d.]+)/);
+    if (match) return `${match[1]}:9050`;
+  } catch {}
+  return "localhost:9050";
+}
+const DEFAULT_HOST = getDefaultHost();
 const HTTP_TIMEOUT_MS = 60_000;
 
 const TOOLS = [
