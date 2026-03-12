@@ -16,6 +16,7 @@ screenshots = "0.8"
 image = "0.25"
 redis = "0.27"
 dotenvy = "0.15"
+axum = "0.8"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

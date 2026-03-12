@@ -19,6 +19,46 @@ impl std::fmt::Display for CaptureError {
     }
 }
 
+/// Screen region in physical pixels.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Region {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Capture the entire primary screen as PNG bytes.
+/// Returns (png_bytes, region) where region is the full screen dimensions.
+pub fn capture_full_screen() -> Result<(Vec<u8>, Region), CaptureError> {
+    let screens = Screen::all().map_err(|e| CaptureError::ScreenshotFailed(e.to_string()))?;
+    let screen = screens.into_iter().next().ok_or(CaptureError::NoScreen)?;
+    let di = screen.display_info;
+    let region = Region {
+        x: di.x,
+        y: di.y,
+        width: di.width,
+        height: di.height,
+    };
+
+    let full = screen
+        .capture()
+        .map_err(|e| CaptureError::ScreenshotFailed(e.to_string()))?;
+
+    let w = full.width();
+    let h = full.height();
+    let rgba_data = full.into_raw();
+    let rgba_img = RgbaImage::from_raw(w, h, rgba_data)
+        .ok_or(CaptureError::EncodeFailed("Failed to create RGBA image".into()))?;
+    let img = DynamicImage::ImageRgba8(rgba_img);
+
+    let mut buf = Vec::new();
+    img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+        .map_err(|e| CaptureError::EncodeFailed(e.to_string()))?;
+
+    Ok((buf, region))
+}
+
 /// Capture a screen region as PNG bytes.
 ///
 /// Coordinates are in **physical pixels** (Tauri 2's outer_position/outer_size

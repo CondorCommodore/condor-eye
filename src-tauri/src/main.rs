@@ -4,6 +4,7 @@ mod capture;
 mod claude;
 mod compare;
 mod config;
+mod http_api;
 mod truth;
 
 use std::sync::Mutex;
@@ -297,6 +298,15 @@ fn main() {
                     let _ = window.emit("trigger-capture", ());
                 }
             })?;
+            // Start Condor Eye HTTP API server
+            let ce_config = app.state::<AppState>().config.lock().unwrap().clone();
+            let ce_bind = std::env::var("CONDOR_EYE_BIND")
+                .unwrap_or_else(|_| "127.0.0.1".to_string());
+            let ce_port = std::env::var("CONDOR_EYE_PORT")
+                .unwrap_or_else(|_| "9050".to_string())
+                .parse::<u16>()
+                .unwrap_or(9050);
+            tauri::async_runtime::spawn(http_api::start_server(ce_config, ce_bind, ce_port));
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -109,6 +109,69 @@ pub async fn extract_from_screenshot(
     Ok(result)
 }
 
+/// Send a screenshot to Claude for free-form description.
+///
+/// Unlike `extract_from_screenshot`, this returns raw text — no JSON parsing.
+/// Used by the HTTP API for generic capture requests.
+pub async fn describe_screenshot(
+    api_key: &str,
+    png_bytes: &[u8],
+    model: &str,
+    prompt: &str,
+) -> Result<String, ExtractionError> {
+    let client = Client::new();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 2000,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": b64,
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": prompt,
+                }
+            ]
+        }]
+    });
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(ExtractionError::RateLimit);
+        }
+        return Err(ExtractionError::Api(format!("{}: {}", status, text)));
+    }
+
+    let api_resp: serde_json::Value = resp.json().await?;
+    let content = api_resp["content"][0]["text"]
+        .as_str()
+        .ok_or(ExtractionError::Parse("No text in response".into()))?
+        .to_string();
+
+    Ok(content)
+}
+
 /// Parse a raw JSON string into ExtractionResult.
 /// Exported for testing JSON parsing independently of the API call.
 pub fn parse_extraction(json_str: &str) -> Result<ExtractionResult, String> {
