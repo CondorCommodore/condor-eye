@@ -9,7 +9,7 @@ Condor Eye (formerly Visual Validator) — a Tauri 2 app (Rust + WebView2) that 
 **Prerequisite**: Rust toolchain installed on Windows (not WSL). The app runs natively on Windows.
 
     # Development (from WSL — calls Windows Rust toolchain)
-    cd ~/code/dev-tools/visual-validator
+    cd ~/code/dev-tools/condor-eye
     cargo.exe tauri dev
 
     # Build release

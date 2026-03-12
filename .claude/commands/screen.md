@@ -14,4 +14,4 @@ Take a screenshot using Condor Eye. Target: $ARGUMENTS
 
 - Always use `condor_eye_windows` first (free, instant) — never `condor_eye_locate` (expensive AI call)
 - If the target mentions a specific UI element within a window (e.g., "the DOM in thinkorswim"), capture the full window and ask the AI to focus on that element in the prompt
-- If Condor Eye app is not running, tell the user to start it: `cd ~/code/dev-tools/visual-validator && cargo.exe tauri dev`
+- If Condor Eye app is not running, tell the user to start it: `cd ~/code/dev-tools/condor-eye && cargo.exe tauri dev`
