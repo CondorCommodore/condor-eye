@@ -91,6 +91,8 @@ pub async fn extract_from_screenshot(
         .as_str()
         .ok_or(ExtractionError::Parse("No text in response".into()))?;
 
+    eprintln!("[VV] Claude raw response ({} chars):\n{}", content_text.len(), content_text);
+
     // Strip markdown code fences if present
     let json_str = content_text
         .trim()

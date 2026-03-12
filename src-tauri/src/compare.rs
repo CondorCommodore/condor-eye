@@ -5,30 +5,37 @@ use crate::config::tick_size;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedLevel {
+    #[serde(default)]
     pub price: f64,
     pub volume: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LevelCount {
+    #[serde(default)]
     pub bids: usize,
+    #[serde(default)]
     pub asks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractionResult {
     pub symbol: Option<String>,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: String,
+    #[serde(default)]
     pub bids: Vec<ExtractedLevel>,
+    #[serde(default)]
     pub asks: Vec<ExtractedLevel>,
-    #[serde(rename = "bestBid")]
+    #[serde(rename = "bestBid", default)]
     pub best_bid: f64,
-    #[serde(rename = "bestAsk")]
+    #[serde(rename = "bestAsk", default)]
     pub best_ask: f64,
+    #[serde(default)]
     pub spread: f64,
     #[serde(rename = "levelCount")]
-    pub level_count: LevelCount,
+    pub level_count: Option<LevelCount>,
+    #[serde(default)]
     pub confidence: String,
     pub notes: Option<String>,
 }
@@ -223,7 +230,7 @@ mod tests {
             best_bid,
             best_ask,
             spread: best_ask - best_bid,
-            level_count: LevelCount { bids: 0, asks: 0 },
+            level_count: Some(LevelCount { bids: 0, asks: 0 }),
             confidence: "high".to_string(),
             notes: None,
         }
@@ -338,7 +345,7 @@ mod tests {
             best_bid: 5600.25,
             best_ask: 5600.50,
             spread: 0.25,
-            level_count: LevelCount { bids: 1, asks: 1 },
+            level_count: Some(LevelCount { bids: 1, asks: 1 }),
             confidence: "high".to_string(),
             notes: None,
         };

@@ -33,6 +33,8 @@ async fn capture_and_compare(
     let cfg = state.config.lock().unwrap().clone();
     let profiles = state.profiles.lock().unwrap().clone();
 
+    eprintln!("[VV] capture_and_compare: symbol={}, mode={}, profile={}", symbol, mode, profile_name);
+
     // Find the requested profile
     let profile = profiles
         .iter()
@@ -57,12 +59,14 @@ async fn capture_and_compare(
     let cap_h = size.height;
 
     // 3. Capture screen region (blocking I/O)
+    eprintln!("[VV] capturing region: x={}, y={}, w={}, h={}", cap_x, cap_y, cap_w, cap_h);
     let png = tokio::task::spawn_blocking(move || {
         capture::capture_region(cap_x, cap_y, cap_w, cap_h)
     })
     .await
-    .map_err(|e| format!("Task join: {}", e))?
-    .map_err(|e| format!("Capture: {}", e))?;
+    .map_err(|e| { eprintln!("[VV] ERROR capture join: {}", e); format!("Task join: {}", e) })?
+    .map_err(|e| { eprintln!("[VV] ERROR capture: {}", e); format!("Capture: {}", e) })?;
+    eprintln!("[VV] captured {} bytes PNG", png.len());
 
     // 4. Restore frame
     let _ = window.show();
@@ -76,8 +80,9 @@ async fn capture_and_compare(
         &profile.prompt,
     )
     .await
-    .map_err(|e| format!("Extraction: {}", e))?;
+    .map_err(|e| { eprintln!("[VV] ERROR extraction: {}", e); format!("Extraction: {}", e) })?;
     let api_latency = start.elapsed().as_millis() as u64;
+    eprintln!("[VV] extraction done in {}ms: {} bids, {} asks", api_latency, extracted.bids.len(), extracted.asks.len());
 
     let cost = config::estimate_cost(cap_w, cap_h, &cfg.model);
 
@@ -119,14 +124,111 @@ async fn capture_and_compare(
     })
     .await
     .map_err(|e| format!("Task join: {}", e))?
-    .map_err(|e| format!("Truth: {}", e))?;
+    .map_err(|e| { eprintln!("[VV] ERROR truth: {}", e); format!("Truth: {}", e) })?;
+    eprintln!("[VV] truth snapshot: {} bids, {} asks", truth_result.bids.len(), truth_result.asks.len());
 
     // 8. Compare
     let mut report = compare::compare_books(&extracted, &truth_result);
     report.api_latency_ms = api_latency;
     report.estimated_cost_usd = cost;
+    eprintln!("[VV] result: {:?} | mismatches={}, missing={}, extra={}",
+        report.overall, report.mismatches.len(), report.missing.len(), report.extra.len());
 
     Ok(report)
+}
+
+/// Free-mode capture — sends screenshot to Claude with a simple prompt, returns raw text.
+#[tauri::command]
+async fn capture_free(
+    window: tauri::Window,
+    prompt: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let user_prompt = if prompt.is_empty() {
+        "Describe what you see in this screenshot. Be specific about any data, numbers, charts, or UI elements visible.".to_string()
+    } else {
+        prompt
+    };
+
+    eprintln!("[VV] free capture: prompt={}", &user_prompt[..user_prompt.len().min(100)]);
+
+    // Hide, capture, show
+    let _ = window.hide();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let (cx, cy, cw, ch) = (pos.x, pos.y, size.width, size.height);
+
+    let png = tokio::task::spawn_blocking(move || {
+        capture::capture_region(cx, cy, cw, ch)
+    })
+    .await
+    .map_err(|e| format!("Task join: {}", e))?
+    .map_err(|e| format!("Capture: {}", e))?;
+
+    let _ = window.show();
+    eprintln!("[VV] free: captured {} bytes", png.len());
+
+    // Send to Claude — raw text response, no JSON parsing
+    let client = reqwest::Client::new();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png);
+
+    let body = serde_json::json!({
+        "model": cfg.model,
+        "max_tokens": 2000,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": b64,
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": user_prompt,
+                }
+            ]
+        }]
+    });
+
+    let start = std::time::Instant::now();
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", &cfg.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("API error: {}", text));
+    }
+
+    let api_resp: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let content = api_resp["content"][0]["text"]
+        .as_str()
+        .unwrap_or("(no response)")
+        .to_string();
+
+    let ms = start.elapsed().as_millis();
+    eprintln!("[VV] free response ({}ms):\n{}", ms, content);
+
+    Ok(content)
+}
+
+/// Start window drag.
+#[tauri::command]
+fn start_drag(window: tauri::Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
 }
 
 /// List available profiles.
@@ -142,17 +244,23 @@ fn list_profiles(state: tauri::State<'_, AppState>) -> Vec<String> {
 }
 
 fn main() {
+    // Load .env file (look in cwd and parent for dev mode)
+    let _ = dotenvy::dotenv();
+    let _ = dotenvy::from_filename("../.env");
+
     let app_config = AppConfig::from_env();
 
     // Load profiles from the profiles/ directory.
-    // Try exe's parent dir first (release), fall back to cwd (dev mode).
-    let profiles_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("profiles")))
-        .filter(|d| d.exists())
-        .unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_default().join("profiles")
-        });
+    // Try: exe parent (release), cwd (dev), cwd parent (dev from src-tauri/).
+    let profiles_dir = [
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("profiles"))),
+        Some(std::env::current_dir().unwrap_or_default().join("profiles")),
+        Some(std::env::current_dir().unwrap_or_default().join("../profiles")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|d| d.exists())
+    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("profiles"));
     let profiles = config::load_all_profiles(&profiles_dir);
 
     if profiles.is_empty() {
@@ -172,7 +280,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             capture_and_compare,
+            capture_free,
             list_profiles,
+            start_drag,
         ])
         .setup(|app| {
             // Register Ctrl+Shift+C global shortcut

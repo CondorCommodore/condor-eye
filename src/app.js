@@ -36,22 +36,47 @@ async function doCapture() {
   const profileName = profileSelect.value;
 
   statusEl.textContent = 'Capturing...';
+  statusEl.className = 'working';
   captureBtn.disabled = true;
 
   try {
-    const report = await invoke('capture_and_compare', {
-      symbol,
-      mode,
-      profileName,
-    });
-    renderResults(report);
-    statusEl.textContent = 'Done';
+    if (mode === 'free') {
+      const text = await invoke('capture_free', { prompt: '' });
+      renderFreeResult(text);
+      statusEl.textContent = 'Done';
+      statusEl.className = 'success';
+    } else {
+      const report = await invoke('capture_and_compare', {
+        symbol,
+        mode,
+        profileName,
+      });
+      renderResults(report);
+      statusEl.textContent = 'Done — ' + report.api_latency_ms + 'ms';
+      statusEl.className = 'success';
+    }
   } catch (err) {
     statusEl.textContent = 'Error: ' + String(err);
+    statusEl.className = 'error';
     resultsEl.classList.add('hidden');
   } finally {
     captureBtn.disabled = false;
   }
+}
+
+// Render free-mode AI response
+function renderFreeResult(text) {
+  resultsEl.classList.remove('hidden');
+  badgeEl.textContent = 'AI';
+  badgeEl.className = 'badge-extract';
+  summaryEl.textContent = 'Free observation';
+  detailsEl.textContent = '';
+  const pre = document.createElement('pre');
+  pre.style.whiteSpace = 'pre-wrap';
+  pre.style.wordBreak = 'break-word';
+  pre.textContent = text;
+  detailsEl.appendChild(pre);
+  metaEl.textContent = '';
 }
 
 // Helper: create a text line element
@@ -141,6 +166,24 @@ const { listen } = window.__TAURI__.event;
 listen('trigger-capture', () => {
   doCapture();
 });
+
+// Window controls
+document.getElementById('minimize-btn').addEventListener('click', () => invoke('plugin:window|minimize'));
+document.getElementById('close-btn').addEventListener('click', () => invoke('plugin:window|close'));
+
+// Window dragging via Rust command
+const dragHandle = document.getElementById('drag-handle');
+const toolbar = document.getElementById('toolbar');
+
+function startDrag(e) {
+  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.button !== 0) return;
+  e.preventDefault();
+  invoke('start_drag');
+}
+
+dragHandle.addEventListener('mousedown', startDrag);
+toolbar.addEventListener('mousedown', startDrag);
 
 // Initialize
 loadProfiles();

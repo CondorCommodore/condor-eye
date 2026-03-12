@@ -7,32 +7,18 @@
   <title>Visual Validator</title>
 </head>
 <body>
+  <!-- Header / drag bar -->
+  <div id="drag-handle">
+    <span class="header-title">Visual Validator</span>
+    <span class="header-spacer"></span>
+    <button id="minimize-btn" title="Minimize">_</button>
+    <button id="close-btn" title="Close">x</button>
+  </div>
+
   <!-- Capture frame border — the transparent center is the capture zone -->
-  <div id="frame">
-    <div id="drag-handle" data-tauri-drag-region></div>
-  </div>
+  <div id="frame"></div>
 
-  <!-- Bottom toolbar -->
-  <div id="toolbar">
-    <button id="capture-btn" title="Capture and Compare (Ctrl+Shift+C)">Capture</button>
-    <select id="symbol-select">
-      <option value="SPY">SPY</option>
-      <option value="/ES">/ES</option>
-      <option value="AAPL">AAPL</option>
-      <option value="QQQ">QQQ</option>
-      <option value="/NQ">/NQ</option>
-    </select>
-    <select id="mode-select">
-      <option value="compare">Compare</option>
-      <option value="extract_only">Extract Only</option>
-    </select>
-    <select id="profile-select">
-      <option value="depth">depth</option>
-    </select>
-    <span id="status">Ready</span>
-  </div>
-
-  <!-- Results panel (slides up from bottom) -->
+  <!-- Results panel (slides up from toolbar) -->
   <div id="results" class="hidden">
     <div id="results-header">
       <span id="result-badge"></span>
@@ -41,6 +27,32 @@
     </div>
     <div id="result-details"></div>
     <div id="result-meta"></div>
+  </div>
+
+  <!-- Bottom control panel -->
+  <div id="toolbar">
+    <div class="toolbar-row">
+      <select id="symbol-select">
+        <option value="SPY">SPY</option>
+        <option value="/ES">/ES</option>
+        <option value="AAPL">AAPL</option>
+        <option value="QQQ">QQQ</option>
+        <option value="/NQ">/NQ</option>
+      </select>
+      <select id="profile-select">
+        <option value="depth">depth</option>
+      </select>
+      <select id="mode-select">
+        <option value="free">Free (describe)</option>
+        <option value="extract_only">Extract Only</option>
+        <option value="compare">Compare</option>
+      </select>
+      <button id="capture-btn">Capture</button>
+      <span class="shortcut-hint">Ctrl+Shift+C</span>
+    </div>
+    <div class="toolbar-row">
+      <span id="status">Ready</span>
+    </div>
   </div>
 
   <script src="app.js" type="module"></script>
