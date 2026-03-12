@@ -1,3 +1,4 @@
+/* Critical: WebView2 transparency requires transparent body */
 html, body {
   background: transparent;
   margin: 0;
@@ -5,17 +6,145 @@ html, body {
   overflow: hidden;
   font-family: 'Segoe UI', system-ui, sans-serif;
   color: #e0e0e0;
+  height: 100%;
+  width: 100%;
+  user-select: none;
 }
 
+/* Capture frame — border defines the region, center is transparent */
+#frame {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 70px; /* space for toolbar + results */
+  border: 2px solid rgba(0, 200, 255, 0.7);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+/* Drag handle — top edge of frame */
+#drag-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 12px;
+  cursor: move;
+  pointer-events: auto;
+}
+
+/* Bottom toolbar */
 #toolbar {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
-  height: 30px;
-  background: rgba(30, 30, 30, 0.85);
+  height: 32px;
+  background: rgba(20, 20, 20, 0.92);
   display: flex;
   align-items: center;
+  gap: 6px;
   padding: 0 8px;
   font-size: 12px;
+  z-index: 10;
+  border-top: 1px solid rgba(0, 200, 255, 0.3);
+}
+
+#toolbar button, #toolbar select {
+  background: rgba(50, 50, 50, 0.9);
+  color: #e0e0e0;
+  border: 1px solid rgba(100, 100, 100, 0.5);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: rgba(0, 200, 255, 0.3);
+}
+
+#toolbar button:active {
+  background: rgba(0, 200, 255, 0.5);
+}
+
+#capture-btn {
+  font-weight: bold;
+}
+
+#status {
+  margin-left: auto;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+/* Results panel */
+#results {
+  position: fixed;
+  bottom: 33px;
+  left: 0;
+  right: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  background: rgba(20, 20, 20, 0.95);
+  border-top: 1px solid rgba(100, 100, 100, 0.3);
+  font-size: 12px;
+  z-index: 9;
+  padding: 8px;
+}
+
+#results.hidden {
+  display: none;
+}
+
+#results-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+#result-badge {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: bold;
+  font-size: 11px;
+}
+
+.badge-pass { background: #1b5e20; color: #81c784; }
+.badge-warn { background: #e65100; color: #ffb74d; }
+.badge-fail { background: #b71c1c; color: #ef9a9a; }
+.badge-extract { background: #0d47a1; color: #90caf9; }
+
+#close-results {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+#result-details {
+  margin: 4px 0;
+  line-height: 1.5;
+}
+
+.mismatch-line {
+  color: #ef9a9a;
+}
+
+.missing-line {
+  color: #ffb74d;
+}
+
+.extra-line {
+  color: #90caf9;
+}
+
+#result-meta {
+  margin-top: 6px;
+  opacity: 0.6;
+  font-size: 10px;
 }

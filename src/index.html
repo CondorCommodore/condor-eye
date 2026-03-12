@@ -2,13 +2,47 @@
 <html>
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="style.css">
   <title>Visual Validator</title>
 </head>
 <body>
-  <div id="toolbar">
-    <span>Visual Validator</span>
+  <!-- Capture frame border — the transparent center is the capture zone -->
+  <div id="frame">
+    <div id="drag-handle" data-tauri-drag-region></div>
   </div>
-  <script src="app.js"></script>
+
+  <!-- Bottom toolbar -->
+  <div id="toolbar">
+    <button id="capture-btn" title="Capture and Compare (Ctrl+Shift+C)">Capture</button>
+    <select id="symbol-select">
+      <option value="SPY">SPY</option>
+      <option value="/ES">/ES</option>
+      <option value="AAPL">AAPL</option>
+      <option value="QQQ">QQQ</option>
+      <option value="/NQ">/NQ</option>
+    </select>
+    <select id="mode-select">
+      <option value="compare">Compare</option>
+      <option value="extract_only">Extract Only</option>
+    </select>
+    <select id="profile-select">
+      <option value="depth">depth</option>
+    </select>
+    <span id="status">Ready</span>
+  </div>
+
+  <!-- Results panel (slides up from bottom) -->
+  <div id="results" class="hidden">
+    <div id="results-header">
+      <span id="result-badge"></span>
+      <span id="result-summary"></span>
+      <button id="close-results">x</button>
+    </div>
+    <div id="result-details"></div>
+    <div id="result-meta"></div>
+  </div>
+
+  <script src="app.js" type="module"></script>
 </body>
 </html>
