@@ -8,6 +8,7 @@ mod truth;
 
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
 use compare::{ComparisonReport, ExtractionResult, Status};
 use config::{AppConfig, ExtractionProfile};
@@ -174,6 +175,21 @@ fn main() {
             capture_and_compare,
             list_profiles,
         ])
+        .setup(|app| {
+            // Register Ctrl+Shift+C global shortcut
+            let shortcut = Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::SHIFT),
+                Code::KeyC,
+            );
+            let handle = app.handle().clone();
+            app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, _event| {
+                // Emit event to frontend to trigger capture
+                if let Some(window) = handle.get_webview_window("main") {
+                    let _ = window.emit("trigger-capture", ());
+                }
+            })?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
