@@ -1,0 +1,13 @@
+{
+  "name": "heatmap",
+  "prompt": "Analyze this L2 market depth heatmap/surface visualization. Extract the visible price bands and their intensity.\n\nReturn a JSON object with this exact structure:\n{\n  \"symbol\": \"detected symbol or null\",\n  \"displayType\": \"heatmap\",\n  \"priceRange\": {\"min\": 100.0, \"max\": 102.0},\n  \"bands\": [{\"price\": 100.5, \"intensity\": \"high|medium|low\", \"side\": \"bid|ask\"}, ...],\n  \"confidence\": \"high|medium|low\",\n  \"notes\": \"any observations\"\n}\n\nRules:\n- Extract price ranges and relative intensity of visible bands\n- Identify bid-side (typically green/warm) vs ask-side (typically red/cool)\n- Return ONLY the JSON object, no other text",
+  "truthSource": {
+    "type": "redis_stream",
+    "stream": "cf.tick",
+    "matchField": "symbol"
+  },
+  "comparison": {
+    "priceToleranceMode": "tick_size",
+    "volumeField": { "extracted": "intensity", "truth": "density" }
+  }
+}

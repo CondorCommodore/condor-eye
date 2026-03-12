@@ -1,0 +1,13 @@
+{
+  "name": "depth",
+  "prompt": "Analyze this trading depth/order book display. Extract all visible price levels and their sizes.\n\nReturn a JSON object with this exact structure:\n{\n  \"symbol\": \"detected symbol or null\",\n  \"displayType\": \"dom_ladder|depth_chart|order_book|unknown\",\n  \"bids\": [{\"price\": 671.27, \"volume\": 480}, ...],\n  \"asks\": [{\"price\": 671.30, \"volume\": 240}, ...],\n  \"bestBid\": 671.27,\n  \"bestAsk\": 671.30,\n  \"spread\": 0.03,\n  \"levelCount\": {\"bids\": 32, \"asks\": 32},\n  \"confidence\": \"high|medium|low\",\n  \"notes\": \"any observations about the display\"\n}\n\nRules:\n- List bids from best (highest price) to worst (lowest price)\n- List asks from best (lowest price) to worst (highest price)\n- Extract exact prices and volumes as shown on screen\n- If a value is partially obscured, set volume to null\n- Return ONLY the JSON object, no other text",
+  "truthSource": {
+    "type": "redis_stream",
+    "stream": "market.depth",
+    "matchField": "symbol"
+  },
+  "comparison": {
+    "priceToleranceMode": "tick_size",
+    "volumeField": { "extracted": "volume", "truth": "totalVolume" }
+  }
+}

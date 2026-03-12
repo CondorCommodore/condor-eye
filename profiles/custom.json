@@ -1,0 +1,11 @@
+{
+  "name": "custom",
+  "prompt": "Analyze this screen and extract all structured data you can identify.\n\nReturn a JSON object describing what you see. Include:\n- Any numerical values and their labels\n- Any tabular data\n- Any charts or visual data representations\n- Layout description\n\nReturn ONLY the JSON object, no other text.",
+  "truthSource": {
+    "type": "none"
+  },
+  "comparison": {
+    "priceToleranceMode": "fixed",
+    "volumeField": { "extracted": "value", "truth": "value" }
+  }
+}

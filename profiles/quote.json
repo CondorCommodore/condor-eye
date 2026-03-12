@@ -1,0 +1,11 @@
+{
+  "name": "quote",
+  "prompt": "Analyze this quote/ticker display. Extract the visible market data.\n\nReturn a JSON object with this exact structure:\n{\n  \"symbol\": \"detected symbol or null\",\n  \"displayType\": \"quote_panel\",\n  \"bid\": 671.27,\n  \"ask\": 671.30,\n  \"last\": 671.28,\n  \"volume\": 1234567,\n  \"change\": -0.42,\n  \"changePercent\": -0.06,\n  \"confidence\": \"high|medium|low\",\n  \"notes\": \"any observations\"\n}\n\nRules:\n- Extract exact values as displayed\n- Set any non-visible field to null\n- Return ONLY the JSON object, no other text",
+  "truthSource": {
+    "type": "none"
+  },
+  "comparison": {
+    "priceToleranceMode": "tick_size",
+    "volumeField": { "extracted": "volume", "truth": "volume" }
+  }
+}

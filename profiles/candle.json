@@ -1,0 +1,13 @@
+{
+  "name": "candle",
+  "prompt": "Analyze this candlestick chart. Extract the OHLC values for each visible candle.\n\nReturn a JSON object with this exact structure:\n{\n  \"symbol\": \"detected symbol or null\",\n  \"displayType\": \"candlestick_chart\",\n  \"candles\": [{\"open\": 100.5, \"high\": 101.2, \"low\": 100.1, \"close\": 100.8, \"timestamp\": \"HH:MM or date\"}, ...],\n  \"timeframe\": \"1m|5m|15m|1h|1d|unknown\",\n  \"priceRange\": {\"min\": 100.0, \"max\": 102.0},\n  \"confidence\": \"high|medium|low\",\n  \"notes\": \"any observations\"\n}\n\nRules:\n- List candles from left (oldest) to right (newest)\n- Extract exact OHLC values as readable from the chart\n- Include timestamps if visible on x-axis\n- Return ONLY the JSON object, no other text",
+  "truthSource": {
+    "type": "redis_stream",
+    "stream": "candle.update",
+    "matchField": "symbol"
+  },
+  "comparison": {
+    "priceToleranceMode": "fixed",
+    "volumeField": { "extracted": "close", "truth": "close" }
+  }
+}
