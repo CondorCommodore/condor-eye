@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -193,6 +193,26 @@ async fn handle_locate(
     }
 }
 
+async fn handle_windows(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let windows = if let Some(query) = params.get("query") {
+        let q = query.clone();
+        tokio::task::spawn_blocking(move || crate::windows::find_windows(&q))
+            .await
+            .unwrap_or_default()
+    } else {
+        tokio::task::spawn_blocking(crate::windows::list_windows)
+            .await
+            .unwrap_or_default()
+    };
+
+    Json(serde_json::json!({
+        "windows": windows,
+        "count": windows.len(),
+    }))
+}
+
 fn api_error(msg: String) -> (StatusCode, Json<ErrorResponse>) {
     eprintln!("[CE] ERROR: {}", msg);
     (
@@ -213,16 +233,21 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
         .route("/api/status", get(handle_status))
         .route("/api/capture", post(handle_capture))
         .route("/api/locate", post(handle_locate))
+        .route("/api/windows", get(handle_windows))
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);
     eprintln!("[CE] HTTP API starting on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect(&format!("Failed to bind to {}", addr));
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[CE] Warning: failed to bind to {}: {}. HTTP API disabled.", addr, e);
+            return;
+        }
+    };
 
-    axum::serve(listener, app)
-        .await
-        .expect("HTTP server error");
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("[CE] HTTP server error: {}", e);
+    }
 }

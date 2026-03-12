@@ -6,6 +6,7 @@ mod compare;
 mod config;
 mod http_api;
 mod truth;
+mod windows;
 
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};

@@ -54,11 +54,28 @@ const TOOLS = [
     },
   },
   {
+    name: "condor_eye_windows",
+    description:
+      "List visible windows with their screen positions and PIDs. Use this to find " +
+      "a window's exact bounds before capturing it — avoids expensive AI-based locate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search string to filter by window title (case-insensitive). Omit to list all windows.",
+        },
+        host: { type: "string", description: `Condor Eye app host. Default: ${DEFAULT_HOST}` },
+      },
+    },
+  },
+  {
     name: "condor_eye_locate",
     description:
-      "Find a window or UI element on screen. Captures the full screen and uses AI " +
-      "to identify the target and return its bounding box. Use this before capture " +
-      "to find the region of interest.",
+      "Find a UI element on screen using AI vision. Captures the full screen and uses AI " +
+      "to identify the target and return its bounding box. Prefer condor_eye_windows for " +
+      "finding windows by title (free and instant) — use this tool for finding specific UI " +
+      "elements within a window.",
     inputSchema: {
       type: "object",
       properties: {
@@ -119,6 +136,20 @@ async function handleLocate(args) {
   return callApi(host, "POST", "/api/locate", { target: args.target });
 }
 
+async function handleWindows(args) {
+  const host = args.host || DEFAULT_HOST;
+  const base = `http://${host}`;
+  const path = args.query
+    ? `/api/windows?query=${encodeURIComponent(args.query)}`
+    : "/api/windows";
+  const resp = await fetch(`${base}${path}`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
 async function handleStatus(args) {
   const host = args.host || DEFAULT_HOST;
   return callApi(host, "GET", "/api/status");
@@ -137,6 +168,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let result;
     switch (name) {
       case "condor_eye_capture": result = await handleCapture(args || {}); break;
+      case "condor_eye_windows": result = await handleWindows(args || {}); break;
       case "condor_eye_locate": result = await handleLocate(args || {}); break;
       case "condor_eye_status": result = await handleStatus(args || {}); break;
       default: return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
