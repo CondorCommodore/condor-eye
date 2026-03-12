@@ -27,6 +27,8 @@ pub struct CaptureRequest {
     pub region: Option<Region>,
     /// Optional HWND — if set, brings window to foreground before capture.
     pub hwnd: Option<u64>,
+    /// Optional key combos to send after focus (e.g. ["ctrl+3"] to switch to tab 3).
+    pub keys: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -95,6 +97,20 @@ async fn handle_capture(
         .map_err(|e| api_error(format!("Focus join: {}", e)))?;
         // Brief delay for window manager to repaint
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    // Send key combos if requested (e.g. switch browser tab)
+    if let Some(keys) = req.keys {
+        for combo in &keys {
+            let c = combo.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::windows::send_key_combo(&c);
+            })
+            .await
+            .map_err(|e| api_error(format!("Keys join: {}", e)))?;
+        }
+        // Wait for tab switch / UI to settle
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 
     // Capture screen

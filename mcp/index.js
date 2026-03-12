@@ -52,6 +52,11 @@ const TOOLS = [
           type: "integer",
           description: "Window handle from condor_eye_windows. If set, brings window to foreground before capture.",
         },
+        keys: {
+          type: "array",
+          items: { type: "string" },
+          description: "Key combos to send after focus, before capture. E.g. [\"ctrl+3\"] to switch to browser tab 3. Works with Firefox, Chrome, Edge (Ctrl+1-9 for tabs).",
+        },
         host: { type: "string", description: `Condor Eye app host. Default: ${DEFAULT_HOST}` },
         include_image: {
           type: "boolean",
@@ -128,6 +133,7 @@ async function handleCapture(args) {
   if (args.prompt) body.prompt = args.prompt;
   if (args.region) body.region = args.region;
   if (args.hwnd) body.hwnd = args.hwnd;
+  if (args.keys) body.keys = args.keys;
   const result = await callApi(host, "POST", "/api/capture", body);
   const response = {
     description: result.description,

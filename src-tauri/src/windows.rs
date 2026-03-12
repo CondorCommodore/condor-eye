@@ -44,6 +44,9 @@ mod platform {
     }
 
     const SW_RESTORE: i32 = 9;
+    const VK_MENU: u8 = 0x12; // Alt key
+    const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
 
     #[link(name = "user32")]
     extern "system" {
@@ -57,6 +60,69 @@ mod platform {
         fn SetForegroundWindow(hWnd: HWND) -> BOOL;
         fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
         fn IsIconic(hWnd: HWND) -> BOOL;
+        fn keybd_event(bVk: u8, bScan: u8, dwFlags: u32, dwExtraInfo: usize);
+        fn SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X: i32, Y: i32, cx: i32, cy: i32, uFlags: u32) -> BOOL;
+        fn GetForegroundWindow() -> HWND;
+        fn GetCurrentThreadId() -> DWORD;
+        fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) -> BOOL;
+        fn BringWindowToTop(hWnd: HWND) -> BOOL;
+    }
+
+    const HWND_TOPMOST: HWND = -1;
+    const HWND_NOTOPMOST: HWND = -2;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOSIZE: u32 = 0x0001;
+
+    const VK_CONTROL: u8 = 0x11;
+    const VK_TAB: u8 = 0x09;
+
+    /// Send a key combo like "ctrl+3" or "ctrl+tab" to the focused window.
+    pub fn send_key_combo(combo: &str) {
+        let lower = combo.to_lowercase();
+        let parts: Vec<&str> = lower.split('+').collect();
+
+        let mut modifiers: Vec<u8> = Vec::new();
+        let mut key: Option<u8> = None;
+
+        for part in &parts {
+            match part.trim() {
+                "ctrl" => modifiers.push(VK_CONTROL),
+                "alt" => modifiers.push(VK_MENU),
+                "tab" => key = Some(VK_TAB),
+                s if s.len() == 1 => {
+                    if let Some(c) = s.chars().next() {
+                        if c.is_ascii_digit() {
+                            // '1' = 0x31, '9' = 0x39
+                            key = Some(c as u8);
+                        } else if c.is_ascii_alphabetic() {
+                            // 'a' = 0x41
+                            key = Some(c.to_ascii_uppercase() as u8);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(vk) = key {
+            eprintln!("[CE] send_key_combo: '{}' → modifiers={:02X?}, key=0x{:02X}, fg=0x{:X}",
+                      combo, modifiers, vk, unsafe { GetForegroundWindow() } as u64);
+            unsafe {
+                // Press modifiers
+                for &m in &modifiers {
+                    keybd_event(m, 0, 0, 0);
+                }
+                // Press and release key
+                keybd_event(vk, 0, 0, 0);
+                keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+                // Release modifiers
+                for &m in modifiers.iter().rev() {
+                    keybd_event(m, 0, KEYEVENTF_KEYUP, 0);
+                }
+            }
+        } else {
+            eprintln!("[CE] send_key_combo: '{}' → no key parsed!", combo);
+        }
     }
 
     /// Callback invoked by `EnumWindows` for each top-level window.
@@ -134,10 +200,12 @@ mod platform {
         1 // TRUE — continue enumeration
     }
 
-    /// Bring a window to the foreground by its HWND.
+    /// Bring a window to the foreground by its HWND, transferring both
+    /// visual Z-order AND keyboard input focus.
     ///
-    /// Restores the window first if it's minimized, then calls
-    /// `SetForegroundWindow`. Returns true if the call succeeded.
+    /// Uses the AttachThreadInput pattern: attach our thread to the
+    /// foreground window's thread, which lets SetForegroundWindow succeed
+    /// even from a background process.
     pub fn focus_window(hwnd: u64) -> bool {
         let h = hwnd as HWND;
         unsafe {
@@ -145,7 +213,42 @@ mod platform {
             if IsIconic(h) != 0 {
                 ShowWindow(h, SW_RESTORE);
             }
-            SetForegroundWindow(h) != 0
+
+            // Get the current foreground window's thread and our thread
+            let fg_hwnd = GetForegroundWindow();
+            let fg_thread = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+            let our_thread = GetCurrentThreadId();
+
+            eprintln!("[CE] focus_window: target=0x{:X}, fg=0x{:X}, fg_thread={}, our_thread={}",
+                      hwnd, fg_hwnd as u64, fg_thread, our_thread);
+
+            // Attach our input to the foreground window's thread
+            // This allows SetForegroundWindow to succeed from a background process
+            let attached = if fg_thread != our_thread {
+                AttachThreadInput(our_thread, fg_thread, 1) != 0
+            } else {
+                false
+            };
+
+            // Force to top of Z-order
+            let flags = SWP_NOMOVE | SWP_NOSIZE;
+            SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, flags);
+            SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+
+            // Bring to top and set foreground (keyboard focus)
+            BringWindowToTop(h);
+            let fg_result = SetForegroundWindow(h);
+
+            // Detach thread input
+            if attached {
+                AttachThreadInput(our_thread, fg_thread, 0);
+            }
+
+            let new_fg = GetForegroundWindow();
+            eprintln!("[CE] focus_window: SetForegroundWindow={}, new_fg=0x{:X}, match={}",
+                      fg_result, new_fg as u64, new_fg == h);
+
+            fg_result != 0
         }
     }
 
@@ -178,6 +281,8 @@ mod platform {
     pub fn focus_window(_hwnd: u64) -> bool {
         false
     }
+
+    pub fn send_key_combo(_combo: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +301,14 @@ pub fn list_windows() -> Vec<WindowInfo> {
 /// Restores minimized windows before focusing. Returns true on success.
 pub fn focus_window(hwnd: u64) -> bool {
     platform::focus_window(hwnd)
+}
+
+/// Send a keyboard shortcut to the currently focused window.
+///
+/// Combo format: "ctrl+1", "ctrl+tab", "ctrl+w", "alt+f4", etc.
+/// Works with Firefox, Chrome, and Edge tab shortcuts (Ctrl+1-9).
+pub fn send_key_combo(combo: &str) {
+    platform::send_key_combo(combo);
 }
 
 /// Filter visible windows by case-insensitive substring match on the title.
