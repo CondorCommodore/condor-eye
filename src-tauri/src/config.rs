@@ -93,6 +93,21 @@ pub fn load_all_profiles(dir: &Path) -> Vec<ExtractionProfile> {
     profiles
 }
 
+/// Estimate Claude API cost for a screenshot of given dimensions.
+/// Formula: image_tokens = (width * height) / 750, output ~ 500 tokens.
+pub fn estimate_cost(width: u32, height: u32, model: &str) -> f64 {
+    let image_tokens = (width as f64 * height as f64) / 750.0;
+    let output_tokens = 500.0;
+    let (input_rate, output_rate) = if model.contains("haiku") {
+        (1.0, 5.0)  // per million tokens
+    } else if model.contains("sonnet") {
+        (3.0, 15.0)
+    } else {
+        (1.0, 5.0)  // default to haiku pricing
+    };
+    (image_tokens / 1_000_000.0) * input_rate + (output_tokens / 1_000_000.0) * output_rate
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +160,19 @@ mod tests {
             .join("profiles");
         let profiles = load_all_profiles(&dir);
         assert!(profiles.len() >= 5, "expected at least 5 profiles, got {}", profiles.len());
+    }
+
+    #[test]
+    fn estimate_cost_haiku() {
+        // ~3000 input tokens (typical screenshot), ~500 output tokens
+        // Haiku: $1/M input, $5/M output
+        let cost = estimate_cost(400, 700, "claude-haiku-4-5-20251001");
+        assert!(cost > 0.001 && cost < 0.01, "haiku cost should be ~$0.005, got {}", cost);
+    }
+
+    #[test]
+    fn estimate_cost_sonnet() {
+        let cost = estimate_cost(400, 700, "claude-sonnet-4-6");
+        assert!(cost > 0.005 && cost < 0.05, "sonnet cost should be more than haiku, got {}", cost);
     }
 }
