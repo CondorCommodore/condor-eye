@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/tauri-v2/crates/tauri-cli/schema.json",
+  "productName": "Visual Validator",
+  "version": "0.1.0",
+  "identifier": "com.condor.visual-validator",
+  "build": {
+    "frontendDist": "../src",
+    "withGlobalTauri": true
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Visual Validator",
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": true,
+        "shadow": false,
+        "width": 400,
+        "height": 700,
+        "skipTaskbar": false
+      }
+    ]
+  }
+}
