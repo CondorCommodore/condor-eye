@@ -1,8 +1,8 @@
 [package]
-name = "visual-validator"
+name = "condor-eye"
 version = "0.1.0"
 edition = "2021"
-description = "Visual data validator using Claude AI vision"
+description = "Condor Eye — AI vision tool for screen capture and analysis"
 
 [dependencies]
 tauri = { version = "2", features = [] }

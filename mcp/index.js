@@ -12,6 +12,9 @@ import {
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 function getDefaultHost() {
+  // Explicit override — set this on non-Aurora machines (e.g., Surface)
+  // to reach the Tauri app via Tailscale: CONDOR_EYE_HOST=100.70.34.55:9050
+  if (process.env.CONDOR_EYE_HOST) return process.env.CONDOR_EYE_HOST;
   try {
     const route = execFileSync("ip", ["route", "show", "default"], { encoding: "utf-8" });
     const match = route.match(/via\s+([\d.]+)/);
