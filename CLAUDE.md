@@ -2,7 +2,7 @@
 
 ## Project
 
-Visual Validator — a Tauri 2 app (Rust + WebView2) for comparing what a trading display shows on screen against known ground truth data. Uses Claude Vision API (Haiku 4.5) to extract structured data from screenshots.
+Condor Eye (formerly Visual Validator) — a Tauri 2 app (Rust + WebView2) that gives Claude agents the ability to see what's on screen. Captures screen regions, sends to Anthropic API (Condor Vision) for analysis, and optionally compares against Redis ground truth data. Exposes an HTTP API for programmatic access and an MCP server for Claude Code integration.
 
 ## Build and Run
 
@@ -20,14 +20,37 @@ Visual Validator — a Tauri 2 app (Rust + WebView2) for comparing what a tradin
 
 ## Architecture
 
-    capture.rs  — screen capture (screenshots crate, Win32 GDI)
-    claude.rs   — Claude Vision API extraction (async reqwest)
-    truth.rs    — Redis ground truth snapshots (market.depth stream)
-    compare.rs  — Diff engine: extracted vs truth -> ComparisonReport
-    config.rs   — AppConfig, profiles, tick sizes, cost estimation
-    main.rs     — Tauri setup, IPC commands, AppState
+    capture.rs   — screen capture (screenshots crate, Win32 GDI) + capture_full_screen()
+    claude.rs    — Condor Vision API: extract_from_screenshot() (JSON) + describe_screenshot() (text)
+    http_api.rs  — axum HTTP server: /api/capture, /api/locate, /api/status (port 9050)
+    truth.rs     — Redis ground truth snapshots (market.depth stream)
+    compare.rs   — Diff engine: extracted vs truth -> ComparisonReport
+    config.rs    — AppConfig, profiles, tick sizes, cost estimation
+    main.rs      — Tauri setup, IPC commands, AppState, HTTP server launch
+    mcp/index.js — Node.js MCP server (stdio transport, wraps HTTP API)
 
 Frontend is vanilla HTML/CSS/JS in src/. Transparent frameless always-on-top window.
+
+## Condor Eye HTTP API (port 9050)
+
+The Tauri app embeds an axum HTTP server for programmatic access. Starts automatically with the app.
+
+    POST /api/capture  — screenshot + Condor Vision description
+    POST /api/locate   — full screen capture, find a window/element, return bounds
+    GET  /api/status   — health check + config
+
+Captures are serialized (one at a time) via tokio::sync::Mutex.
+
+## MCP Server
+
+Node.js MCP server in `mcp/` wraps the HTTP API as 3 Claude Code tools:
+- `condor_eye_capture` — capture + describe screen content
+- `condor_eye_locate` — find a window/element on screen
+- `condor_eye_status` — health check
+
+Registered globally: `claude mcp add --scope user condor-eye -- node /path/to/mcp/index.js`
+
+The MCP server auto-detects WSL gateway IP for Windows host routing. Requires Windows Firewall rule for port 9050 (one-time setup).
 
 ## Extraction Profiles
 
@@ -47,6 +70,8 @@ Profiles specify: extraction prompt, truth source (Redis stream, file, none), co
 | ANTHROPIC_API_KEY | Yes | (none) |
 | REDIS_URL | No | redis://127.0.0.1:6379 |
 | CLAUDE_MODEL | No | claude-haiku-4-5-20251001 |
+| CONDOR_EYE_BIND | No | 0.0.0.0 |
+| CONDOR_EYE_PORT | No | 9050 |
 
 ## Key Patterns
 
