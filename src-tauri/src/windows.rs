@@ -43,6 +43,8 @@ mod platform {
         bottom: i32,
     }
 
+    const SW_RESTORE: i32 = 9;
+
     #[link(name = "user32")]
     extern "system" {
         fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(HWND, LPARAM) -> BOOL, lParam: LPARAM) -> BOOL;
@@ -52,6 +54,9 @@ mod platform {
         fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
         fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut DWORD) -> DWORD;
         fn GetClassNameW(hWnd: HWND, lpClassName: *mut u16, nMaxCount: i32) -> i32;
+        fn SetForegroundWindow(hWnd: HWND) -> BOOL;
+        fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
+        fn IsIconic(hWnd: HWND) -> BOOL;
     }
 
     /// Callback invoked by `EnumWindows` for each top-level window.
@@ -129,6 +134,21 @@ mod platform {
         1 // TRUE — continue enumeration
     }
 
+    /// Bring a window to the foreground by its HWND.
+    ///
+    /// Restores the window first if it's minimized, then calls
+    /// `SetForegroundWindow`. Returns true if the call succeeded.
+    pub fn focus_window(hwnd: u64) -> bool {
+        let h = hwnd as HWND;
+        unsafe {
+            // Restore if minimized
+            if IsIconic(h) != 0 {
+                ShowWindow(h, SW_RESTORE);
+            }
+            SetForegroundWindow(h) != 0
+        }
+    }
+
     /// Enumerate all visible top-level windows with non-empty titles and
     /// non-zero size.
     pub fn list_windows() -> Vec<WindowInfo> {
@@ -151,9 +171,12 @@ mod platform {
 mod platform {
     use super::WindowInfo;
 
-    /// Returns an empty list on non-Windows platforms.
     pub fn list_windows() -> Vec<WindowInfo> {
         Vec::new()
+    }
+
+    pub fn focus_window(_hwnd: u64) -> bool {
+        false
     }
 }
 
@@ -166,6 +189,13 @@ mod platform {
 /// On non-Windows platforms this returns an empty `Vec`.
 pub fn list_windows() -> Vec<WindowInfo> {
     platform::list_windows()
+}
+
+/// Bring a window to the foreground by HWND.
+///
+/// Restores minimized windows before focusing. Returns true on success.
+pub fn focus_window(hwnd: u64) -> bool {
+    platform::focus_window(hwnd)
 }
 
 /// Filter visible windows by case-insensitive substring match on the title.

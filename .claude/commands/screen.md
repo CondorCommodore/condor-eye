@@ -6,7 +6,7 @@ Take a screenshot using Condor Eye. Target: $ARGUMENTS
 
 2. **Select the best match** — If multiple windows match, pick the most relevant one based on the target description. If no match, tell the user what windows are available and ask them to clarify.
 
-3. **Capture the region** — Call `condor_eye_capture` with the window's bounds as the `region` parameter. Use a prompt that asks for detailed description of the target content.
+3. **Capture the region** — Call `condor_eye_capture` with the window's bounds as the `region` parameter AND the `hwnd` from step 1 (this brings the window to foreground before capturing). Use a prompt that asks for detailed description of the target content.
 
 4. **Present results** — Show a concise summary of what Condor Eye sees. Include the window title, dimensions, and key observations.
 

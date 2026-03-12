@@ -25,6 +25,8 @@ pub struct HttpState {
 pub struct CaptureRequest {
     pub prompt: Option<String>,
     pub region: Option<Region>,
+    /// Optional HWND — if set, brings window to foreground before capture.
+    pub hwnd: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -83,6 +85,17 @@ async fn handle_capture(
 
     // Serialize captures — one at a time
     let _guard = state.capture_lock.lock().await;
+
+    // Bring target window to foreground if hwnd provided
+    if let Some(hwnd) = req.hwnd {
+        tokio::task::spawn_blocking(move || {
+            crate::windows::focus_window(hwnd);
+        })
+        .await
+        .map_err(|e| api_error(format!("Focus join: {}", e)))?;
+        // Brief delay for window manager to repaint
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
 
     // Capture screen
     let (png, region) = if let Some(r) = req.region {
