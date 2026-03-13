@@ -268,7 +268,7 @@ function getFocusRegion() {
 // DOM elements
 const captureBtn = document.getElementById('capture-btn');
 const promptInput = document.getElementById('prompt-input');
-const captureModeEl = document.getElementById('capture-mode');
+const destEl = document.getElementById('capture-dest');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
 const badgeEl = document.getElementById('result-badge');
@@ -277,39 +277,70 @@ const detailsEl = document.getElementById('result-details');
 const metaEl = document.getElementById('result-meta');
 const closeBtn = document.getElementById('close-results');
 
-// Capture mode: 'api' (send to Anthropic) or 'local' (image only)
-let captureMode = 'api';
+// Capture destinations — click to cycle
+const DESTINATIONS = [
+  { id: 'api',        label: 'API',        css: 'api' },
+  { id: 'aurora-01',  label: 'aurora-01',  css: 'agent' },
+  { id: 'surface-01', label: 'surface-01', css: 'agent' },
+  { id: 'discord',    label: '#fleet',     css: 'discord' },
+];
+let destIndex = 0;
 
-captureModeEl.addEventListener('click', () => {
-  captureMode = captureMode === 'api' ? 'local' : 'api';
-  captureModeEl.textContent = captureMode.toUpperCase();
-  captureModeEl.className = captureMode;
+// Stop mousedown from bubbling to toolbar's startDrag handler
+destEl.addEventListener('mousedown', (e) => {
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+});
+destEl.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+});
+destEl.addEventListener('click', () => {
+  destIndex = (destIndex + 1) % DESTINATIONS.length;
+  const dest = DESTINATIONS[destIndex];
+  destEl.textContent = dest.label;
+  destEl.className = dest.css;
 });
 
-// Capture handler
+// Build the prompt (user text + focus region context)
+function buildPrompt() {
+  const userPrompt = promptInput.value.trim();
+  const focus = getFocusRegion();
+  let prompt = userPrompt || 'Describe what you see on screen.';
+  if (focus) {
+    prompt += `\n\nIMPORTANT: A yellow "FOCUS" box highlights a region at approximately (${focus.x}, ${focus.y}) with size ${focus.width}x${focus.height} pixels. Pay special attention to the content inside this highlighted area and describe it in detail first, then describe the surrounding context.`;
+  }
+  return prompt;
+}
+
+// Capture handler — behavior depends on selected destination
 async function doCapture() {
-  statusEl.textContent = 'Capturing...';
+  const dest = DESTINATIONS[destIndex];
+  statusEl.textContent = dest.id === 'api' ? 'Capturing...' : `Capturing → ${dest.label}...`;
   statusEl.className = 'working';
   captureBtn.disabled = true;
 
   try {
-    if (captureMode === 'local') {
-      // Local mode: capture + describe locally (no API tokens used)
-      // TODO: implement local-only capture command in Rust
-      statusEl.textContent = 'Local mode not yet implemented';
-      statusEl.className = 'error';
-      return;
-    } else {
-      // API mode: capture + send to Anthropic for analysis
-      const userPrompt = promptInput.value.trim();
-      const focus = getFocusRegion();
-      let prompt = userPrompt || 'Describe what you see on screen.';
-      if (focus) {
-        prompt += `\n\nIMPORTANT: A yellow "FOCUS" box highlights a region at approximately (${focus.x}, ${focus.y}) with size ${focus.width}x${focus.height} pixels. Pay special attention to the content inside this highlighted area and describe it in detail first, then describe the surrounding context.`;
-      }
-      const text = await invoke('capture_free', { prompt });
+    // All destinations start with an API capture (Anthropic analyzes the image)
+    const prompt = buildPrompt();
+    const text = await invoke('capture_free', { prompt });
+
+    if (dest.id === 'api') {
+      // Show result locally
       renderFreeResult(text);
       statusEl.textContent = 'Done';
+      statusEl.className = 'success';
+    } else if (dest.id === 'discord') {
+      // Post to Discord #fleet
+      const msg = await invoke('share_discord', { channel: 'fleet' });
+      renderFreeResult(text);
+      statusEl.textContent = msg;
+      statusEl.className = 'success';
+    } else {
+      // Send to coord agent
+      const msg = await invoke('share_coord', { agentId: dest.id });
+      renderFreeResult(text);
+      statusEl.textContent = msg;
       statusEl.className = 'success';
     }
   } catch (err) {
@@ -436,7 +467,7 @@ const dragHandle = document.getElementById('drag-handle');
 const toolbar = document.getElementById('toolbar');
 
 function startDrag(e) {
-  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SPAN') return;
   if (e.button !== 0) return;
   if (isNearEdge(e)) return;
   e.preventDefault();
