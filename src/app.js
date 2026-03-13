@@ -1,4 +1,50 @@
 const { invoke } = window.__TAURI__.core;
+const { getCurrentWindow } = window.__TAURI__.window;
+
+// --- Edge-resize handler for frameless transparent window ---
+// The drag-handle (top 32px) and toolbar (bottom ~100px) consume mousedown
+// events at the window edges, preventing native resize. This capture-phase
+// handler intercepts mousedown within RESIZE_BORDER px of any edge/corner
+// and delegates to Tauri 2's startResizeDragging().
+const RESIZE_BORDER = 6;
+
+function getResizeDirection(e) {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const x = e.clientX;
+  const y = e.clientY;
+
+  const north = y < RESIZE_BORDER;
+  const south = y > h - RESIZE_BORDER;
+  const west  = x < RESIZE_BORDER;
+  const east  = x > w - RESIZE_BORDER;
+
+  // Corners take priority over edges
+  if (north && west) return 'NorthWest';
+  if (north && east) return 'NorthEast';
+  if (south && west) return 'SouthWest';
+  if (south && east) return 'SouthEast';
+  if (north) return 'North';
+  if (south) return 'South';
+  if (west)  return 'West';
+  if (east)  return 'East';
+
+  return null;
+}
+
+function isNearEdge(e) {
+  return getResizeDirection(e) !== null;
+}
+
+document.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  const direction = getResizeDirection(e);
+  if (direction) {
+    e.preventDefault();
+    e.stopPropagation();
+    getCurrentWindow().startResizeDragging(direction);
+  }
+}, true); // capture phase — fires before drag-handle / toolbar handlers
 
 // DOM elements
 const captureBtn = document.getElementById('capture-btn');
@@ -178,6 +224,10 @@ const toolbar = document.getElementById('toolbar');
 function startDrag(e) {
   if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
   if (e.button !== 0) return;
+  // Safety net: don't start window drag when cursor is near an edge
+  // (the capture-phase resize handler should have already caught this,
+  // but bail out here in case it didn't)
+  if (isNearEdge(e)) return;
   e.preventDefault();
   invoke('start_drag');
 }
