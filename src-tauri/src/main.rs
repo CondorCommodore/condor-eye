@@ -246,9 +246,21 @@ fn list_profiles(state: tauri::State<'_, AppState>) -> Vec<String> {
 }
 
 fn main() {
-    // Load .env file (look in cwd and parent for dev mode)
+    // Load .env file — first file to set a variable wins (dotenvy skips existing):
+    // 1. cwd/.env (dev mode — highest priority)
+    // 2. cwd/../.env (dev from src-tauri/)
+    // 3. %APPDATA%/Condor Eye/.env (installed app — persistent config)
+    // 4. Next to the exe (fallback)
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("../.env");
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let _ = dotenvy::from_path(std::path::Path::new(&appdata).join("Condor Eye").join(".env"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let _ = dotenvy::from_path(dir.join(".env"));
+        }
+    }
 
     let app_config = AppConfig::from_env();
 

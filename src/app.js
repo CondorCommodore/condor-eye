@@ -1,33 +1,52 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
+const { PhysicalSize, PhysicalPosition } = window.__TAURI__.dpi;
 
-// --- Edge-resize handler for frameless transparent window ---
-// The drag-handle (top 32px) and toolbar (bottom ~100px) consume mousedown
-// events at the window edges, preventing native resize. This capture-phase
-// handler intercepts mousedown within RESIZE_BORDER px of any edge/corner
-// and delegates to Tauri 2's startResizeDragging().
-const RESIZE_BORDER = 6;
+const appWindow = getCurrentWindow();
+
+// --- Edge/corner resize for frameless transparent window ---
+// Tauri 2's startResizeDragging rejects compound corner directions on WebView2,
+// so edges use native resize and corners use manual pointer-tracked resize.
+const RESIZE_BORDER = 6;   // edge detection strip (px)
+const CORNER_SIZE = 40;    // corner grab zone (px from each frame corner)
+const MIN_SIZE = 200;      // minimum window dimension (px)
+
+// Read frame geometry from DOM so JS stays in sync with CSS
+const FRAME_TOP = document.getElementById('drag-handle')?.offsetHeight ?? 32;
+const FRAME_BOTTOM = document.getElementById('toolbar')?.offsetHeight ?? 100;
+
+// Sign vectors for each resize direction — avoids stringly-typed includes() checks
+const DIR_SIGNS = {
+  North:     { dx:  0, dy: -1 }, South:     { dx:  0, dy:  1 },
+  West:      { dx: -1, dy:  0 }, East:      { dx:  1, dy:  0 },
+  NorthWest: { dx: -1, dy: -1 }, NorthEast: { dx:  1, dy: -1 },
+  SouthWest: { dx: -1, dy:  1 }, SouthEast: { dx:  1, dy:  1 },
+};
+
+const CURSOR_MAP = {
+  NorthWest: 'nwse-resize', SouthEast: 'nwse-resize',
+  NorthEast: 'nesw-resize', SouthWest: 'nesw-resize',
+  North: 'ns-resize', South: 'ns-resize',
+  East: 'ew-resize',  West: 'ew-resize',
+};
 
 function getResizeDirection(e) {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const x = e.clientX;
   const y = e.clientY;
+  const frameBottom = h - FRAME_BOTTOM;
 
-  const north = y < RESIZE_BORDER;
-  const south = y > h - RESIZE_BORDER;
-  const west  = x < RESIZE_BORDER;
-  const east  = x > w - RESIZE_BORDER;
+  // Corners: square zones at each blue frame corner (checked first)
+  const nearFrameTop    = Math.abs(y - FRAME_TOP) < CORNER_SIZE;
+  const nearFrameBottom = Math.abs(y - frameBottom) < CORNER_SIZE;
+  const nearLeft        = x < CORNER_SIZE;
+  const nearRight       = x > w - CORNER_SIZE;
 
-  // Corners take priority over edges
-  if (north && west) return 'NorthWest';
-  if (north && east) return 'NorthEast';
-  if (south && west) return 'SouthWest';
-  if (south && east) return 'SouthEast';
-  if (north) return 'North';
-  if (south) return 'South';
-  if (west)  return 'West';
-  if (east)  return 'East';
+  if (nearFrameTop && nearLeft)     return 'NorthWest';
+  if (nearFrameTop && nearRight)    return 'NorthEast';
+  if (nearFrameBottom && nearLeft)  return 'SouthWest';
+  if (nearFrameBottom && nearRight) return 'SouthEast';
 
   return null;
 }
@@ -36,15 +55,87 @@ function isNearEdge(e) {
   return getResizeDirection(e) !== null;
 }
 
-document.addEventListener('mousedown', (e) => {
+// Cursor feedback — only write to dataset when direction changes
+let lastCursor = null;
+document.addEventListener('mousemove', (e) => {
+  const direction = getResizeDirection(e);
+  const cursor = direction ? CURSOR_MAP[direction] : null;
+  if (cursor === lastCursor) return;
+  lastCursor = cursor;
+  if (cursor) {
+    document.documentElement.dataset.resizeCursor = cursor;
+  } else {
+    delete document.documentElement.dataset.resizeCursor;
+  }
+});
+
+// Corner directions need manual resize (native startResizeDragging fails on WebView2)
+const CORNER_DIRECTIONS = new Set(['NorthWest', 'NorthEast', 'SouthWest', 'SouthEast']);
+
+// Manual corner resize state
+let resizing = null;
+let resizeRaf = 0;
+
+document.addEventListener('pointermove', (e) => {
+  if (!resizing || !resizing.ready) return;
+  resizing.lastScreenX = e.screenX;
+  resizing.lastScreenY = e.screenY;
+  // Throttle to display refresh rate
+  if (!resizeRaf) {
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      if (!resizing || !resizing.ready) return;
+      const { dx: sx, dy: sy } = DIR_SIGNS[resizing.direction];
+      const deltaX = (resizing.lastScreenX - resizing.startX) * resizing.scale;
+      const deltaY = (resizing.lastScreenY - resizing.startY) * resizing.scale;
+
+      let w = resizing.origW + sx * deltaX;
+      let h = resizing.origH + sy * deltaY;
+      w = Math.max(MIN_SIZE, w);
+      h = Math.max(MIN_SIZE, h);
+
+      let x = resizing.origX;
+      let y = resizing.origY;
+      if (sx < 0) x = resizing.origX + (resizing.origW - w);
+      if (sy < 0) y = resizing.origY + (resizing.origH - h);
+
+      appWindow.setSize(new PhysicalSize(Math.round(w), Math.round(h)));
+      appWindow.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)));
+    });
+  }
+});
+
+document.addEventListener('pointerup', (e) => {
+  if (resizing) {
+    e.target.releasePointerCapture(e.pointerId);
+    resizing = null;
+  }
+});
+
+document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   const direction = getResizeDirection(e);
   if (direction) {
     e.preventDefault();
-    e.stopPropagation();
-    getCurrentWindow().startResizeDragging(direction);
+    e.stopImmediatePropagation();
+    if (CORNER_DIRECTIONS.has(direction)) {
+      // Capture pointer SYNCHRONOUSLY — cannot defer to async
+      e.target.setPointerCapture(e.pointerId);
+      resizing = { direction, startX: e.screenX, startY: e.screenY, ready: false };
+      Promise.all([appWindow.outerPosition(), appWindow.outerSize(), appWindow.scaleFactor()])
+        .then(([pos, size, scale]) => {
+          if (resizing) {
+            resizing.origX = pos.x;  resizing.origY = pos.y;
+            resizing.origW = size.width;  resizing.origH = size.height;
+            resizing.scale = scale;
+            resizing.ready = true;
+          }
+        });
+    } else {
+      appWindow.startResizeDragging(direction);
+    }
   }
-}, true); // capture phase — fires before drag-handle / toolbar handlers
+}, true);
 
 // DOM elements
 const captureBtn = document.getElementById('capture-btn');

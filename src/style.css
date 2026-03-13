@@ -11,6 +11,12 @@ html, body {
   user-select: none; /* default off for drag areas */
 }
 
+/* Edge/corner resize cursors — data attribute set by JS on mousemove */
+html[data-resize-cursor="nwse-resize"] * { cursor: nwse-resize !important; }
+html[data-resize-cursor="nesw-resize"] * { cursor: nesw-resize !important; }
+html[data-resize-cursor="ns-resize"] * { cursor: ns-resize !important; }
+html[data-resize-cursor="ew-resize"] * { cursor: ew-resize !important; }
+
 /* Header / drag bar */
 #drag-handle {
   position: fixed;
