@@ -137,11 +137,138 @@ document.addEventListener('pointerdown', (e) => {
   }
 }, true);
 
+// --- Focus box: draggable/resizable highlight region inside capture frame ---
+const focusBox = document.getElementById('focus-box');
+const focusToggle = document.getElementById('focus-toggle');
+let focusActive = false;
+let focusOp = null; // { type: 'move'|'resize', ... }
+
+const FOCUS_EDGE = 8;      // edge/corner detection for focus box (px)
+const FOCUS_MIN = 40;      // minimum focus box dimension (px)
+
+focusToggle.addEventListener('click', () => {
+  focusActive = !focusActive;
+  focusBox.classList.toggle('hidden', !focusActive);
+  focusToggle.classList.toggle('active', focusActive);
+  focusToggle.textContent = focusActive ? '[x]' : '[ ]';
+});
+
+// Detect which edge/corner of focus box the cursor is near
+function getFocusEdge(e) {
+  const rect = focusBox.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const w = rect.width;
+  const h = rect.height;
+
+  const top = y < FOCUS_EDGE;
+  const bottom = y > h - FOCUS_EDGE;
+  const left = x < FOCUS_EDGE;
+  const right = x > w - FOCUS_EDGE;
+
+  if (top && left)     return 'NorthWest';
+  if (top && right)    return 'NorthEast';
+  if (bottom && left)  return 'SouthWest';
+  if (bottom && right) return 'SouthEast';
+  if (top)    return 'North';
+  if (bottom) return 'South';
+  if (left)   return 'West';
+  if (right)  return 'East';
+  return null;
+}
+
+// Update cursor when hovering over focus box edges
+focusBox.addEventListener('mousemove', (e) => {
+  if (focusOp) return;
+  const edge = getFocusEdge(e);
+  focusBox.style.cursor = edge ? CURSOR_MAP[edge] : 'move';
+});
+
+focusBox.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  focusBox.setPointerCapture(e.pointerId);
+
+  const edge = getFocusEdge(e);
+  if (edge) {
+    // Resize
+    focusOp = {
+      type: 'resize', edge,
+      startX: e.clientX, startY: e.clientY,
+      origLeft: focusBox.offsetLeft, origTop: focusBox.offsetTop,
+      origW: focusBox.offsetWidth, origH: focusBox.offsetHeight,
+    };
+  } else {
+    // Move
+    focusOp = {
+      type: 'move',
+      startX: e.clientX, startY: e.clientY,
+      origLeft: focusBox.offsetLeft, origTop: focusBox.offsetTop,
+    };
+  }
+});
+
+document.addEventListener('pointermove', (e) => {
+  if (!focusOp) return;
+  const dx = e.clientX - focusOp.startX;
+  const dy = e.clientY - focusOp.startY;
+
+  const minY = FRAME_TOP + 2;
+  const maxBottom = window.innerHeight - FRAME_BOTTOM - 2;
+  const minX = 2;
+  const maxRight = window.innerWidth - 2;
+
+  if (focusOp.type === 'move') {
+    const maxX = maxRight - focusBox.offsetWidth;
+    const maxY = maxBottom - focusBox.offsetHeight;
+    focusBox.style.left = Math.max(minX, Math.min(maxX, focusOp.origLeft + dx)) + 'px';
+    focusBox.style.top = Math.max(minY, Math.min(maxY, focusOp.origTop + dy)) + 'px';
+  } else {
+    const { dx: sx, dy: sy } = DIR_SIGNS[focusOp.edge];
+    let l = focusOp.origLeft;
+    let t = focusOp.origTop;
+    let w = focusOp.origW;
+    let h = focusOp.origH;
+
+    if (sx > 0) w = Math.max(FOCUS_MIN, w + dx);
+    if (sx < 0) { w = Math.max(FOCUS_MIN, w - dx); l = focusOp.origLeft + (focusOp.origW - w); }
+    if (sy > 0) h = Math.max(FOCUS_MIN, h + dy);
+    if (sy < 0) { h = Math.max(FOCUS_MIN, h - dy); t = focusOp.origTop + (focusOp.origH - h); }
+
+    // Clamp to frame
+    l = Math.max(minX, Math.min(maxRight - w, l));
+    t = Math.max(minY, Math.min(maxBottom - h, t));
+
+    focusBox.style.left = l + 'px';
+    focusBox.style.top = t + 'px';
+    focusBox.style.width = w + 'px';
+    focusBox.style.height = h + 'px';
+  }
+});
+
+document.addEventListener('pointerup', (e) => {
+  if (focusOp) {
+    focusOp = null;
+  }
+});
+
+// Get focus box bounds relative to the capture frame (for prompt injection)
+function getFocusRegion() {
+  if (!focusActive) return null;
+  const frameTop = FRAME_TOP + 2; // account for border
+  const frameLeft = 2;
+  return {
+    x: focusBox.offsetLeft - frameLeft,
+    y: focusBox.offsetTop - frameTop,
+    width: focusBox.offsetWidth,
+    height: focusBox.offsetHeight,
+  };
+}
+
 // DOM elements
 const captureBtn = document.getElementById('capture-btn');
-const symbolSelect = document.getElementById('symbol-select');
-const modeSelect = document.getElementById('mode-select');
-const profileSelect = document.getElementById('profile-select');
+const promptInput = document.getElementById('prompt-input');
+const captureModeEl = document.getElementById('capture-mode');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
 const badgeEl = document.getElementById('result-badge');
@@ -150,46 +277,39 @@ const detailsEl = document.getElementById('result-details');
 const metaEl = document.getElementById('result-meta');
 const closeBtn = document.getElementById('close-results');
 
-// Load available profiles
-async function loadProfiles() {
-  try {
-    const profiles = await invoke('list_profiles');
-    profileSelect.textContent = '';
-    for (const name of profiles) {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      profileSelect.appendChild(opt);
-    }
-  } catch (e) {
-    console.error('Failed to load profiles:', e);
-  }
-}
+// Capture mode: 'api' (send to Anthropic) or 'local' (image only)
+let captureMode = 'api';
+
+captureModeEl.addEventListener('click', () => {
+  captureMode = captureMode === 'api' ? 'local' : 'api';
+  captureModeEl.textContent = captureMode.toUpperCase();
+  captureModeEl.className = captureMode;
+});
 
 // Capture handler
 async function doCapture() {
-  const symbol = symbolSelect.value;
-  const mode = modeSelect.value;
-  const profileName = profileSelect.value;
-
   statusEl.textContent = 'Capturing...';
   statusEl.className = 'working';
   captureBtn.disabled = true;
 
   try {
-    if (mode === 'free') {
-      const text = await invoke('capture_free', { prompt: '' });
+    if (captureMode === 'local') {
+      // Local mode: capture + describe locally (no API tokens used)
+      // TODO: implement local-only capture command in Rust
+      statusEl.textContent = 'Local mode not yet implemented';
+      statusEl.className = 'error';
+      return;
+    } else {
+      // API mode: capture + send to Anthropic for analysis
+      const userPrompt = promptInput.value.trim();
+      const focus = getFocusRegion();
+      let prompt = userPrompt || 'Describe what you see on screen.';
+      if (focus) {
+        prompt += `\n\nIMPORTANT: A yellow "FOCUS" box highlights a region at approximately (${focus.x}, ${focus.y}) with size ${focus.width}x${focus.height} pixels. Pay special attention to the content inside this highlighted area and describe it in detail first, then describe the surrounding context.`;
+      }
+      const text = await invoke('capture_free', { prompt });
       renderFreeResult(text);
       statusEl.textContent = 'Done';
-      statusEl.className = 'success';
-    } else {
-      const report = await invoke('capture_and_compare', {
-        symbol,
-        mode,
-        profileName,
-      });
-      renderResults(report);
-      statusEl.textContent = 'Done — ' + report.api_latency_ms + 'ms';
       statusEl.className = 'success';
     }
   } catch (err) {
@@ -296,6 +416,9 @@ function renderResults(report) {
 
 // Event listeners
 captureBtn.addEventListener('click', doCapture);
+promptInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doCapture();
+});
 closeBtn.addEventListener('click', () => resultsEl.classList.add('hidden'));
 
 // Listen for global shortcut trigger
@@ -313,11 +436,8 @@ const dragHandle = document.getElementById('drag-handle');
 const toolbar = document.getElementById('toolbar');
 
 function startDrag(e) {
-  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
   if (e.button !== 0) return;
-  // Safety net: don't start window drag when cursor is near an edge
-  // (the capture-phase resize handler should have already caught this,
-  // but bail out here in case it didn't)
   if (isNearEdge(e)) return;
   e.preventDefault();
   invoke('start_drag');
@@ -325,6 +445,3 @@ function startDrag(e) {
 
 dragHandle.addEventListener('mousedown', startDrag);
 toolbar.addEventListener('mousedown', startDrag);
-
-// Initialize
-loadProfiles();
