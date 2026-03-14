@@ -23,6 +23,9 @@
     <div id="focus-label">FOCUS</div>
   </div>
 
+  <!-- Drawing canvas — overlays the capture frame for pen annotations -->
+  <canvas id="draw-canvas"></canvas>
+
   <!-- Results panel (slides up from toolbar) -->
   <div id="results" class="hidden">
     <div id="results-header">
@@ -39,10 +42,13 @@
     <div class="toolbar-row">
       <input id="prompt-input" type="text" placeholder="What to look for..." spellcheck="false">
       <button id="focus-toggle" title="Toggle focus box">[ ]</button>
+      <button id="pen-toggle" title="Toggle drawing pen">✎</button>
+      <button id="pen-color" title="Cycle pen color"></button>
+      <button id="pen-clear" title="Clear all drawings">✕</button>
       <button id="capture-btn">Capture</button>
     </div>
     <div class="toolbar-row">
-      <span id="capture-mode" title="API = sent to Anthropic, Local = image only">API</span>
+      <span id="capture-dest" title="Click to cycle destination">API</span>
       <span id="status">Ready</span>
       <span class="shortcut-hint">Ctrl+Shift+C</span>
     </div>

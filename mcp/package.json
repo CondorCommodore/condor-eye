@@ -4,6 +4,13 @@
   "description": "MCP server for Condor Eye — gives Claude agents the ability to see the screen",
   "type": "module",
   "main": "index.js",
+  "license": "MIT",
+  "author": "CondorCommodore",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CondorCommodore/condor-eye"
+  },
+  "homepage": "https://github.com/CondorCommodore/condor-eye",
   "scripts": { "start": "node index.js" },
   "dependencies": { "@modelcontextprotocol/sdk": "^1.12.1" }
 }

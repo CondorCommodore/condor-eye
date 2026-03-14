@@ -1,8 +1,13 @@
+import { getStroke } from './lib/perfect-freehand.js';
+
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 const { PhysicalSize, PhysicalPosition } = window.__TAURI__.dpi;
 
 const appWindow = getCurrentWindow();
+
+// Pen state — declared early because the capture-phase resize handler checks it.
+let penActive = false;
 
 // --- Edge/corner resize for frameless transparent window ---
 // Tauri 2's startResizeDragging rejects compound corner directions on WebView2,
@@ -114,6 +119,9 @@ document.addEventListener('pointerup', (e) => {
 
 document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
+  // When pen is active, don't intercept events for corner resize —
+  // drawing takes priority over window resizing.
+  if (penActive) return;
   const direction = getResizeDirection(e);
   if (direction) {
     e.preventDefault();
@@ -264,6 +272,138 @@ function getFocusRegion() {
     height: focusBox.offsetHeight,
   };
 }
+
+// --- Drawing pen (perfect-freehand) ---
+const drawCanvas = document.getElementById('draw-canvas');
+const drawCtx = drawCanvas.getContext('2d');
+const penToggle = document.getElementById('pen-toggle');
+const penColorBtn = document.getElementById('pen-color');
+const penClear = document.getElementById('pen-clear');
+
+const PEN_COLORS = [
+  { hex: '#ff4444', name: 'red' },
+  { hex: '#00e5ff', name: 'cyan' },
+  { hex: '#ffd740', name: 'yellow' },
+  { hex: '#69ff69', name: 'green' },
+  { hex: '#ffffff', name: 'white' },
+];
+let penColorIndex = 0;
+let penColor = PEN_COLORS[0].hex;
+let penStrokes = [];   // completed: { outline, color }
+let currentPoints = null;  // in-progress [x, y, pressure][]
+let drawRaf = 0;
+
+const PEN_OPTIONS = {
+  size: 6,
+  thinning: 0.5,
+  smoothing: 0.5,
+  streamline: 0.5,
+  simulatePressure: true,
+};
+
+// Size canvas bitmap to match CSS layout (1:1 — no DPR scaling).
+// Canvas display size is set by CSS position constraints; bitmap just
+// needs to match so drawing coordinates map directly to pixels.
+function resizeDrawCanvas() {
+  const w = drawCanvas.clientWidth;
+  const h = drawCanvas.clientHeight;
+  if (drawCanvas.width === w && drawCanvas.height === h) return;
+  drawCanvas.width = w;
+  drawCanvas.height = h;
+  redrawStrokes();
+}
+
+function redrawStrokes() {
+  drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+  for (const stroke of penStrokes) {
+    renderStroke(stroke.outline, stroke.color);
+  }
+  if (currentPoints && currentPoints.length > 1) {
+    const outline = getStroke(currentPoints, PEN_OPTIONS);
+    renderStroke(outline, penColor);
+  }
+}
+
+function renderStroke(outline, color) {
+  if (outline.length < 2) return;
+  drawCtx.fillStyle = color;
+  drawCtx.beginPath();
+  drawCtx.moveTo(outline[0][0], outline[0][1]);
+  for (let i = 1; i < outline.length - 1; i++) {
+    const xc = (outline[i][0] + outline[i + 1][0]) / 2;
+    const yc = (outline[i][1] + outline[i + 1][1]) / 2;
+    drawCtx.quadraticCurveTo(outline[i][0], outline[i][1], xc, yc);
+  }
+  drawCtx.closePath();
+  drawCtx.fill();
+}
+
+// Toggle pen on/off
+penToggle.addEventListener('click', () => {
+  penActive = !penActive;
+  drawCanvas.classList.toggle('active', penActive);
+  penToggle.classList.toggle('active', penActive);
+  // Raise canvas above everything when drawing, and disable pointer events
+  // on overlapping elements so they don't intercept pen strokes.
+  drawCanvas.style.zIndex = penActive ? '12' : '';
+  const blockEvents = penActive ? 'none' : '';
+  document.getElementById('results').style.pointerEvents = blockEvents;
+  focusBox.style.pointerEvents = blockEvents;
+});
+
+// Cycle pen color
+penColorBtn.addEventListener('click', () => {
+  penColorIndex = (penColorIndex + 1) % PEN_COLORS.length;
+  penColor = PEN_COLORS[penColorIndex].hex;
+  penColorBtn.style.background = penColor;
+  penToggle.style.setProperty('--pen-color', penColor);
+});
+
+// Clear all strokes
+penClear.addEventListener('click', () => {
+  penStrokes = [];
+  currentPoints = null;
+  redrawStrokes();
+});
+
+// Prevent toolbar drag from eating pen button clicks
+for (const el of [penToggle, penColorBtn, penClear]) {
+  el.addEventListener('mousedown', (e) => { e.stopPropagation(); e.stopImmediatePropagation(); });
+  el.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.stopImmediatePropagation(); });
+}
+
+// Drawing event handlers on the canvas
+drawCanvas.addEventListener('pointerdown', (e) => {
+  if (!penActive || e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  drawCanvas.setPointerCapture(e.pointerId);
+  currentPoints = [[e.offsetX, e.offsetY, e.pressure]];
+});
+
+drawCanvas.addEventListener('pointermove', (e) => {
+  if (!currentPoints) return;
+  currentPoints.push([e.offsetX, e.offsetY, e.pressure]);
+  if (!drawRaf) {
+    drawRaf = requestAnimationFrame(() => {
+      drawRaf = 0;
+      redrawStrokes();
+    });
+  }
+});
+
+drawCanvas.addEventListener('pointerup', (e) => {
+  if (!currentPoints) return;
+  drawCanvas.releasePointerCapture(e.pointerId);
+  const outline = getStroke(currentPoints, PEN_OPTIONS);
+  penStrokes.push({ outline, color: penColor });
+  currentPoints = null;
+  redrawStrokes();
+});
+
+// ResizeObserver fires after the initial layout is computed, avoiding the
+// race where getBoundingClientRect returns stale/default dimensions.
+new ResizeObserver(() => resizeDrawCanvas()).observe(drawCanvas);
 
 // DOM elements
 const captureBtn = document.getElementById('capture-btn');
