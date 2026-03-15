@@ -6,6 +6,9 @@ pub struct AppConfig {
     pub api_key: String,
     pub redis_url: String,
     pub model: String,
+    pub discord_bridge_url: Option<String>,
+    pub coord_api_url: String,
+    pub coord_api_token: String,
 }
 
 impl AppConfig {
@@ -17,6 +20,11 @@ impl AppConfig {
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
             model: std::env::var("CLAUDE_MODEL")
                 .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string()),
+            discord_bridge_url: std::env::var("DISCORD_BRIDGE_URL").ok(),
+            coord_api_url: std::env::var("COORD_API_URL")
+                .unwrap_or_else(|_| "http://localhost:8800".to_string()),
+            coord_api_token: std::env::var("COORD_API_TOKEN")
+                .unwrap_or_default(),
         }
     }
 }

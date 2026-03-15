@@ -4,7 +4,7 @@ call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
 
 echo.
 echo Running cargo test...
-pushd \\wsl.localhost\Ubuntu\home\mikem\code\dev-tools\visual-validator\src-tauri
+pushd src-tauri
 cargo test
 if %ERRORLEVEL% EQU 0 (
     echo.

@@ -3,6 +3,10 @@ name = "condor-eye"
 version = "0.1.0"
 edition = "2021"
 description = "Condor Eye — AI vision tool for screen capture and analysis"
+license = "MIT"
+repository = "https://github.com/CondorCommodore/condor-eye"
+homepage = "https://github.com/CondorCommodore/condor-eye"
+authors = ["CondorCommodore"]
 
 [dependencies]
 tauri = { version = "2", features = [] }

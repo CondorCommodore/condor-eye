@@ -15,10 +15,17 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 use compare::{ComparisonReport, Status};
 use config::{AppConfig, ExtractionProfile};
 
+/// Last capture result — stored for sharing to Discord/coord.
+pub struct LastCapture {
+    pub description: String,
+    pub image_b64: String,
+}
+
 /// Shared app state managed by Tauri.
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub profiles: Mutex<Vec<ExtractionProfile>>,
+    pub last_capture: Mutex<Option<LastCapture>>,
 }
 
 /// Main capture-and-compare command.
@@ -224,6 +231,12 @@ async fn capture_free(
     let ms = start.elapsed().as_millis();
     eprintln!("[VV] free response ({}ms):\n{}", ms, content);
 
+    // Store for share commands
+    *state.last_capture.lock().unwrap() = Some(LastCapture {
+        description: content.clone(),
+        image_b64: b64,
+    });
+
     Ok(content)
 }
 
@@ -245,10 +258,110 @@ fn list_profiles(state: tauri::State<'_, AppState>) -> Vec<String> {
         .collect()
 }
 
+/// Share last capture to Discord via the discord-mcp HTTP bridge.
+#[tauri::command]
+async fn share_discord(
+    channel: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let cfg = state.config.lock().unwrap().clone();
+
+    let (description, image_b64) = {
+        let guard = state.last_capture.lock().unwrap();
+        let c = guard.as_ref().ok_or("No capture to share")?;
+        (c.description.clone(), c.image_b64.clone())
+    };
+
+    let channel = channel.unwrap_or_else(|| "fleet".to_string());
+    let bridge_url = cfg.discord_bridge_url
+        .unwrap_or_else(|| "http://localhost:8770".to_string());
+
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "channel": channel,
+        "message": format!("**Condor Eye Capture**\n{}", &description[..description.len().min(1900)]),
+        "attachment": image_b64,
+        "filename": "capture.png",
+    });
+
+    let resp = client
+        .post(format!("{}/discord/post", bridge_url))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("Discord bridge: {}", e))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Discord error: {}", text));
+    }
+
+    Ok(format!("Sent to #{}", channel))
+}
+
+/// Share last capture to a coord agent as a proposed task.
+#[tauri::command]
+async fn share_coord(
+    agent_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    if cfg.coord_api_token.is_empty() {
+        return Err("COORD_API_TOKEN not configured".to_string());
+    }
+
+    let description = {
+        let guard = state.last_capture.lock().unwrap();
+        let c = guard.as_ref().ok_or("No capture to share")?;
+        c.description.clone()
+    };
+
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "id": format!("ce-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
+        "summary": format!("[Condor Eye] {}", &description[..description.len().min(200)]),
+        "context": description,
+        "to_agent": agent_id,
+        "tags": ["condor-eye", "capture"],
+    });
+
+    let resp = client
+        .post(format!("{}/tasks", cfg.coord_api_url))
+        .header("Authorization", format!("Bearer {}", cfg.coord_api_token))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("Coord: {}", e))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Coord error: {}", text));
+    }
+
+    Ok(format!("Sent to {}", agent_id))
+}
+
 fn main() {
-    // Load .env file (look in cwd and parent for dev mode)
+    // Load .env file — first file to set a variable wins (dotenvy skips existing):
+    // 1. cwd/.env (dev mode — highest priority)
+    // 2. cwd/../.env (dev from src-tauri/)
+    // 3. %APPDATA%/Condor Eye/.env (installed app — persistent config)
+    // 4. Next to the exe (fallback)
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("../.env");
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let _ = dotenvy::from_path(std::path::Path::new(&appdata).join("Condor Eye").join(".env"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let _ = dotenvy::from_path(dir.join(".env"));
+        }
+    }
 
     let app_config = AppConfig::from_env();
 
@@ -279,12 +392,15 @@ fn main() {
         .manage(AppState {
             config: Mutex::new(app_config),
             profiles: Mutex::new(profiles),
+            last_capture: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             capture_and_compare,
             capture_free,
             list_profiles,
             start_drag,
+            share_discord,
+            share_coord,
         ])
         .setup(|app| {
             // Register Ctrl+Shift+C global shortcut

@@ -11,6 +11,12 @@ html, body {
   user-select: none; /* default off for drag areas */
 }
 
+/* Edge/corner resize cursors — data attribute set by JS on mousemove */
+html[data-resize-cursor="nwse-resize"] * { cursor: nwse-resize !important; }
+html[data-resize-cursor="nesw-resize"] * { cursor: nesw-resize !important; }
+html[data-resize-cursor="ns-resize"] * { cursor: ns-resize !important; }
+html[data-resize-cursor="ew-resize"] * { cursor: ew-resize !important; }
+
 /* Header / drag bar */
 #drag-handle {
   position: fixed;
@@ -90,20 +96,51 @@ html, body {
   gap: 8px;
 }
 
-#toolbar select {
+/* Prompt input */
+#prompt-input {
+  flex: 1;
   background: rgba(40, 40, 50, 0.95);
   color: #e0e0e0;
   border: 1px solid rgba(80, 80, 100, 0.6);
   padding: 5px 8px;
   border-radius: 4px;
   font-size: 13px;
-  cursor: pointer;
-  min-width: 80px;
+  min-width: 0;
 }
 
-#toolbar select:focus {
+#prompt-input:focus {
   border-color: rgba(0, 180, 255, 0.6);
   outline: none;
+}
+
+#prompt-input::placeholder {
+  color: #555;
+  font-style: italic;
+}
+
+/* Capture mode indicator */
+#capture-dest {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+}
+
+#capture-dest.api {
+  background: rgba(0, 140, 220, 0.2);
+  color: rgba(0, 180, 255, 0.9);
+}
+
+#capture-dest.agent {
+  background: rgba(105, 219, 124, 0.15);
+  color: #69db7c;
+}
+
+#capture-dest.discord {
+  background: rgba(114, 137, 218, 0.15);
+  color: #7289da;
 }
 
 #capture-btn {
@@ -236,4 +273,129 @@ html, body {
   font-size: 11px;
   border-top: 1px solid rgba(80, 80, 100, 0.3);
   padding-top: 6px;
+}
+
+/* Focus box — draggable/resizable highlight within capture frame */
+#focus-box {
+  position: fixed;
+  top: 120px;
+  left: 40px;
+  width: 200px;
+  height: 150px;
+  border: 3px solid rgba(255, 200, 0, 0.9);
+  border-radius: 4px;
+  box-shadow: 0 0 12px rgba(255, 200, 0, 0.3), inset 0 0 12px rgba(255, 200, 0, 0.05);
+  cursor: move;
+  z-index: 8;
+  box-sizing: border-box;
+}
+
+#focus-box.hidden {
+  display: none;
+}
+
+#focus-label {
+  position: absolute;
+  top: -18px;
+  left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 200, 0, 0.9);
+  letter-spacing: 1px;
+  pointer-events: none;
+}
+
+/* Focus toggle button */
+#focus-toggle {
+  background: rgba(40, 40, 50, 0.95);
+  color: #888;
+  border: 1px solid rgba(80, 80, 100, 0.6);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: monospace;
+}
+
+#focus-toggle:hover {
+  color: #fff;
+  border-color: rgba(255, 200, 0, 0.6);
+}
+
+#focus-toggle.active {
+  color: rgba(255, 200, 0, 0.9);
+  border-color: rgba(255, 200, 0, 0.6);
+  background: rgba(255, 200, 0, 0.1);
+}
+
+/* Drawing canvas — overlays capture frame, transparent when inactive.
+   Canvas is a replaced element so top/bottom constraints alone won't
+   reliably compute height in WebView2 — use explicit calc() instead. */
+#draw-canvas {
+  position: fixed;
+  top: 32px;
+  left: 0;
+  width: 100%;
+  height: calc(100vh - 132px);
+  z-index: 7;
+  pointer-events: none;
+}
+
+#draw-canvas.active {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* Pen toggle button */
+#pen-toggle {
+  background: rgba(40, 40, 50, 0.95);
+  color: #888;
+  border: 1px solid rgba(80, 80, 100, 0.6);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#pen-toggle:hover {
+  color: #fff;
+  border-color: rgba(255, 68, 68, 0.6);
+}
+
+#pen-toggle.active {
+  color: var(--pen-color, #ff4444);
+  border-color: var(--pen-color, #ff4444);
+  background: rgba(255, 68, 68, 0.1);
+}
+
+/* Pen color swatch — small circle showing current color */
+#pen-color {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(80, 80, 100, 0.6);
+  padding: 0;
+  cursor: pointer;
+  background: #ff4444;
+}
+
+#pen-color:hover {
+  border-color: #fff;
+}
+
+/* Pen clear button */
+#pen-clear {
+  background: rgba(40, 40, 50, 0.95);
+  color: #888;
+  border: 1px solid rgba(80, 80, 100, 0.6);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#pen-clear:hover {
+  color: #fff;
+  border-color: rgba(255, 68, 68, 0.6);
 }

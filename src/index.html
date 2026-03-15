@@ -18,6 +18,14 @@
   <!-- Capture frame border — the transparent center is the capture zone -->
   <div id="frame"></div>
 
+  <!-- Focus box — draggable/resizable highlight region inside the capture frame -->
+  <div id="focus-box" class="hidden">
+    <div id="focus-label">FOCUS</div>
+  </div>
+
+  <!-- Drawing canvas — overlays the capture frame for pen annotations -->
+  <canvas id="draw-canvas"></canvas>
+
   <!-- Results panel (slides up from toolbar) -->
   <div id="results" class="hidden">
     <div id="results-header">
@@ -32,26 +40,17 @@
   <!-- Bottom control panel -->
   <div id="toolbar">
     <div class="toolbar-row">
-      <select id="symbol-select">
-        <option value="SPY">SPY</option>
-        <option value="/ES">/ES</option>
-        <option value="AAPL">AAPL</option>
-        <option value="QQQ">QQQ</option>
-        <option value="/NQ">/NQ</option>
-      </select>
-      <select id="profile-select">
-        <option value="depth">depth</option>
-      </select>
-      <select id="mode-select">
-        <option value="free">Free (describe)</option>
-        <option value="extract_only">Extract Only</option>
-        <option value="compare">Compare</option>
-      </select>
+      <input id="prompt-input" type="text" placeholder="What to look for..." spellcheck="false">
+      <button id="focus-toggle" title="Toggle focus box">[ ]</button>
+      <button id="pen-toggle" title="Toggle drawing pen">✎</button>
+      <button id="pen-color" title="Cycle pen color"></button>
+      <button id="pen-clear" title="Clear all drawings">✕</button>
       <button id="capture-btn">Capture</button>
-      <span class="shortcut-hint">Ctrl+Shift+C</span>
     </div>
     <div class="toolbar-row">
+      <span id="capture-dest" title="Click to cycle destination">API</span>
       <span id="status">Ready</span>
+      <span class="shortcut-hint">Ctrl+Shift+C</span>
     </div>
   </div>
 
