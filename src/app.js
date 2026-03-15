@@ -119,10 +119,10 @@ document.addEventListener('pointerup', (e) => {
 
 document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
-  // When pen is active, don't intercept events for corner resize —
-  // drawing takes priority over window resizing.
-  if (penActive) return;
   const direction = getResizeDirection(e);
+  // When pen is active, only intercept if we're on a resize corner/edge —
+  // otherwise let the event pass through to the canvas for drawing.
+  if (penActive && !direction) return;
   if (direction) {
     e.preventDefault();
     e.stopImmediatePropagation();

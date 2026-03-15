@@ -328,13 +328,15 @@ html[data-resize-cursor="ew-resize"] * { cursor: ew-resize !important; }
   background: rgba(255, 200, 0, 0.1);
 }
 
-/* Drawing canvas — overlays capture frame, transparent when inactive */
+/* Drawing canvas — overlays capture frame, transparent when inactive.
+   Canvas is a replaced element so top/bottom constraints alone won't
+   reliably compute height in WebView2 — use explicit calc() instead. */
 #draw-canvas {
   position: fixed;
   top: 32px;
   left: 0;
-  right: 0;
-  bottom: 100px;
+  width: 100%;
+  height: calc(100vh - 132px);
   z-index: 7;
   pointer-events: none;
 }
