@@ -112,7 +112,45 @@ const TOOLS = [
   },
 ];
 
+async function isReachable(host) {
+  try {
+    const resp = await fetch(`http://${host}/api/status`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+async function tryLaunch() {
+  try {
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const execFileAsync = promisify(execFile);
+    await execFileAsync("powershell.exe", [
+      "-Command",
+      `Start-Process 'C:\\Users\\mikem\\AppData\\Local\\Condor Eye\\condor-eye.exe'`,
+    ]);
+    // Wait up to 8s for the app to start
+    for (let i = 0; i < 16; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      if (await isReachable(DEFAULT_HOST)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+async function ensureRunning(host) {
+  if (await isReachable(host)) return;
+  // Try auto-launch
+  if (host === DEFAULT_HOST && await tryLaunch()) return;
+  throw new Error(
+    `Condor Eye is not running (${host} unreachable). ` +
+    `Auto-launch failed. Start it manually from Windows Start menu.`
+  );
+}
+
 async function callApi(host, method, path, body) {
+  await ensureRunning(host);
   const url = `http://${host}${path}`;
   const options = {
     method,
@@ -152,6 +190,7 @@ async function handleLocate(args) {
 
 async function handleWindows(args) {
   const host = args.host || DEFAULT_HOST;
+  await ensureRunning(host);
   const base = `http://${host}`;
   const path = args.query
     ? `/api/windows?query=${encodeURIComponent(args.query)}`
