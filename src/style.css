@@ -346,6 +346,28 @@ html[data-resize-cursor="ew-resize"] * { cursor: ew-resize !important; }
   cursor: crosshair;
 }
 
+/* Grid editor toggle */
+#grid-toggle {
+  background: rgba(40, 40, 50, 0.95);
+  color: #888;
+  border: 1px solid rgba(80, 80, 100, 0.6);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#grid-toggle:hover {
+  color: #fff;
+  border-color: rgba(0, 180, 255, 0.6);
+}
+
+#grid-toggle.active {
+  color: #00b4ff;
+  border-color: #00b4ff;
+  background: rgba(0, 180, 255, 0.1);
+}
+
 /* Pen toggle button */
 #pen-toggle {
   background: rgba(40, 40, 50, 0.95);
