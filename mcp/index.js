@@ -153,12 +153,30 @@ async function ensureRunning(host) {
   );
 }
 
-async function callApi(host, method, path, body) {
+// Resolve capture token from 1Password (cached per session)
+let _captureToken = null;
+async function getCaptureToken() {
+  if (_captureToken) return _captureToken;
+  try {
+    const { execFileSync } = await import("child_process");
+    _captureToken = execFileSync("op.exe", ["read", "op://Dev/condor-eye-capture/token"], { encoding: "utf-8" }).trim();
+    return _captureToken;
+  } catch {
+    throw new Error("Failed to read capture token from 1Password. Run: op.exe signin");
+  }
+}
+
+async function callApi(host, method, path, body, authRequired = false) {
   await ensureRunning(host);
   const url = `http://${host}${path}`;
+  const headers = { "Content-Type": "application/json" };
+  if (authRequired) {
+    const token = await getCaptureToken();
+    headers["Authorization"] = `Bearer ${token}`;
+  }
   const options = {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   };
   if (body) options.body = JSON.stringify(body);
@@ -177,7 +195,7 @@ async function handleCapture(args) {
   if (args.hwnd) body.hwnd = args.hwnd;
   if (args.no_focus) body.no_focus = true;
   if (args.keys) body.keys = args.keys;
-  const result = await callApi(host, "POST", "/api/capture", body);
+  const result = await callApi(host, "POST", "/api/capture", body, true);
   const response = {
     description: result.description,
     latency_ms: result.latency_ms,

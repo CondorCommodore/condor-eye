@@ -17,6 +17,10 @@ use crate::config::{self, AppConfig};
 pub struct HttpState {
     pub config: AppConfig,
     pub capture_lock: Mutex<()>,
+    /// Token from 1Password that authorizes paid AI capture calls.
+    /// If set, /api/capture requires `Authorization: Bearer <token>` header.
+    /// If empty, /api/capture is disabled entirely (returns 403).
+    pub capture_token: String,
 }
 
 // ── Request/Response types ──
@@ -83,8 +87,31 @@ async fn handle_status(State(state): State<Arc<HttpState>>) -> Json<StatusRespon
 
 async fn handle_capture(
     State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CaptureRequest>,
 ) -> Result<Json<CaptureResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Gate: paid AI capture requires 1Password-issued token
+    if state.capture_token.is_empty() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Capture disabled: no CAPTURE_TOKEN set. Run: op.exe read 'op://Dev/condor-eye-capture/token' to authorize.".to_string(),
+            }),
+        ));
+    }
+    let auth = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let expected = format!("Bearer {}", state.capture_token);
+    if auth != expected {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Invalid or missing Authorization header. Use: Authorization: Bearer <token from op>".to_string(),
+            }),
+        ));
+    }
+
     let prompt = req.prompt.unwrap_or_else(|| {
         "Describe what you see in this screenshot. Be specific about any data, numbers, charts, or UI elements visible.".to_string()
     });
@@ -256,6 +283,41 @@ fn api_error(msg: String) -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
+// ── Raw screenshot — capture without AI analysis (free, no Haiku calls) ──
+
+#[derive(Deserialize)]
+pub struct ScreenshotRequest {
+    pub region: Option<Region>,
+}
+
+async fn handle_screenshot(
+    State(state): State<Arc<HttpState>>,
+    Json(req): Json<ScreenshotRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let _guard = state.capture_lock.lock().await;
+
+    let (png, region) = if let Some(r) = req.region {
+        let (rx, ry, rw, rh) = (r.x, r.y, r.width, r.height);
+        let png = tokio::task::spawn_blocking(move || capture::capture_region(rx, ry, rw, rh))
+            .await
+            .map_err(|e| api_error(format!("Task join: {}", e)))?
+            .map_err(|e| api_error(format!("Capture: {}", e)))?;
+        (png, r)
+    } else {
+        tokio::task::spawn_blocking(capture::capture_full_screen)
+            .await
+            .map_err(|e| api_error(format!("Task join: {}", e)))?
+            .map_err(|e| api_error(format!("Capture: {}", e)))?
+    };
+
+    let image = base64::engine::general_purpose::STANDARD.encode(&png);
+    Ok(Json(serde_json::json!({
+        "image": image,
+        "region": { "x": region.x, "y": region.y, "width": region.width, "height": region.height },
+        "size_bytes": png.len(),
+    })))
+}
+
 // ── Vision proxy — forwards to local vision server so JS stays same-origin ──
 
 async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
@@ -274,9 +336,17 @@ async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, J
 // ── Server startup ──
 
 pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
+    let capture_token = std::env::var("CAPTURE_TOKEN").unwrap_or_default();
+    if capture_token.is_empty() {
+        eprintln!("[CE] WARNING: CAPTURE_TOKEN not set — /api/capture is DISABLED (403)");
+        eprintln!("[CE]   To enable: export CAPTURE_TOKEN=$(op.exe read 'op://Dev/condor-eye-capture/token')");
+    } else {
+        eprintln!("[CE] CAPTURE_TOKEN set — /api/capture is authorized");
+    }
     let state = Arc::new(HttpState {
         config,
         capture_lock: Mutex::new(()),
+        capture_token,
     });
 
     let app = Router::new()
@@ -285,6 +355,7 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
         .route("/api/locate", post(handle_locate))
         .route("/api/windows", get(handle_windows))
         .route("/api/vision", get(handle_vision_proxy))
+        .route("/api/screenshot", post(handle_screenshot))
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);
