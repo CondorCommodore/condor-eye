@@ -256,6 +256,21 @@ fn api_error(msg: String) -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
+// ── Vision proxy — forwards to local vision server so JS stays same-origin ──
+
+async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let url = std::env::var("VISION_URL").unwrap_or_else(|_| "http://localhost:8090/vision/latest".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| api_error(format!("HTTP client: {}", e)))?;
+    let resp = client.get(&url).send().await
+        .map_err(|e| api_error(format!("Vision server unreachable: {}", e)))?;
+    let body: serde_json::Value = resp.json().await
+        .map_err(|e| api_error(format!("Vision parse: {}", e)))?;
+    Ok(Json(body))
+}
+
 // ── Server startup ──
 
 pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
@@ -269,6 +284,7 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
         .route("/api/capture", post(handle_capture))
         .route("/api/locate", post(handle_locate))
         .route("/api/windows", get(handle_windows))
+        .route("/api/vision", get(handle_vision_proxy))
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);

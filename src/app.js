@@ -322,6 +322,8 @@ function redrawStrokes() {
     const outline = getStroke(currentPoints, PEN_OPTIONS);
     renderStroke(outline, penColor);
   }
+  // Vision overlays drawn on top of pen strokes
+  if (typeof renderVisionOverlays === 'function') renderVisionOverlays();
 }
 
 function renderStroke(outline, color) {
@@ -621,9 +623,7 @@ toolbar.addEventListener('mousedown', startDrag);
 let visionOverlays = [];  // [{x, y, w, h, color, label}]
 let visionActive = false;
 let visionTimer = null;
-// Vision server runs in WSL — try WSL IP first, then localhost
-const VISION_HOSTS = ['http://172.23.137.79:8090', 'http://localhost:8090'];
-let VISION_URL = VISION_HOSTS[0] + '/vision/latest';
+// Vision data fetched via Tauri IPC (bypasses CSP entirely)
 
 function renderVisionOverlays() {
   // Called after redrawStrokes — draws vision boxes on top of pen strokes
@@ -684,32 +684,12 @@ function renderVisionOverlays() {
   drawCtx.restore();
 }
 
-// Patch redrawStrokes to include vision overlays
-const _origRedrawStrokes = redrawStrokes;
-// Can't reassign const, so override via prototype — instead, hook into the draw cycle
-// by replacing the function reference in the global scope
-const origRedraw = window._redrawAll || null;
-
-// Override: after each redraw, also draw vision overlays
-const _patchedRedraw = function() {
-  // Original strokes
-  drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-  for (const stroke of penStrokes) {
-    renderStroke(stroke.outline, stroke.color);
-  }
-  if (currentPoints && currentPoints.length > 1) {
-    const outline = getStroke(currentPoints, PEN_OPTIONS);
-    renderStroke(outline, penColor);
-  }
-  // Vision overlays on top
-  renderVisionOverlays();
-};
+// Vision overlays are now rendered as part of redrawStrokes() directly.
+// No patching needed — fetchVisionData() calls redrawStrokes() after updating overlay data.
 
 async function fetchVisionData() {
   try {
-    const resp = await fetch(VISION_URL, { signal: AbortSignal.timeout(2000) });
-    if (!resp.ok) return;
-    const data = await resp.json();
+    const data = await invoke('fetch_vision');
     if (!data || !data.ts) return;
 
     const overlays = [];
@@ -748,12 +728,12 @@ async function fetchVisionData() {
     };
 
     visionOverlays = overlays;
-    _patchedRedraw();
+    redrawStrokes();
   } catch {
     // Vision server not available — clear overlays silently
     if (visionOverlays.length) {
       visionOverlays = [];
-      _patchedRedraw();
+      redrawStrokes();
     }
   }
 }
@@ -774,18 +754,21 @@ function stopVision() {
   console.log('[vision] overlay polling stopped');
 }
 
-// Auto-discover vision server and start polling
+// Auto-discover vision server via Tauri IPC (retry every 10s for 5 attempts)
 (async function() {
-  for (const host of VISION_HOSTS) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 10000));
     try {
-      const r = await fetch(host + '/vision/status', { signal: AbortSignal.timeout(2000) });
-      if (r.ok) {
-        VISION_URL = host + '/vision/latest';
-        console.log('[vision] found server at', host);
+      console.log(`[vision] attempt ${attempt + 1}: trying IPC fetch_vision`);
+      const data = await invoke('fetch_vision');
+      if (data) {
+        console.log('[vision] IPC connected, starting overlay polling');
         startVision();
         return;
       }
-    } catch {}
+    } catch (err) {
+      console.log(`[vision] IPC failed: ${err}`);
+    }
   }
-  console.log('[vision] no vision server found, overlay disabled');
+  console.log('[vision] vision server not available after 5 attempts, overlay disabled');
 })();

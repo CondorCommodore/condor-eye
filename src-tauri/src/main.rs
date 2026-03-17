@@ -346,6 +346,18 @@ async fn share_coord(
     Ok(format!("Sent to {}", agent_id))
 }
 
+/// Fetch vision overlay data from the local vision server via IPC (bypasses CSP).
+#[tauri::command]
+async fn fetch_vision(client: tauri::State<'_, reqwest::Client>) -> Result<serde_json::Value, String> {
+    let url = std::env::var("VISION_URL")
+        .unwrap_or_else(|_| "http://localhost:8090/vision/latest".to_string());
+    let resp = client.get(&url).send().await
+        .map_err(|e| format!("Vision unreachable: {}", e))?;
+    let body: serde_json::Value = resp.json().await
+        .map_err(|e| format!("Vision parse: {}", e))?;
+    Ok(body)
+}
+
 fn main() {
     // Load .env file — first file to set a variable wins (dotenvy skips existing):
     // 1. cwd/.env (dev mode — highest priority)
@@ -387,8 +399,15 @@ fn main() {
         );
     }
 
+    // Spawn a shared reqwest client for vision proxy
+    let vision_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .expect("reqwest client");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(vision_client)
         .manage(AppState {
             config: Mutex::new(app_config),
             profiles: Mutex::new(profiles),
@@ -401,6 +420,7 @@ fn main() {
             start_drag,
             share_discord,
             share_coord,
+            fetch_vision,
         ])
         .setup(|app| {
             // Register Ctrl+Shift+C global shortcut
