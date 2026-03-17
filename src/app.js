@@ -696,30 +696,39 @@ async function fetchVisionData() {
     const frameW = data.frame_size?.[0] || 1;
     const frameH = data.frame_size?.[1] || 1;
 
-    // Bid walls — cyan boxes on left side
-    for (const wall of (data.bid_walls || [])) {
-      const rowH = (wall.rows || 10) / frameH;
-      overlays.push({
-        x: 0,
-        y: wall.y_pct - rowH / 2,
-        w: wall.width_pct,
-        h: rowH,
-        color: '#00ccff',
-        label: `BID ${(wall.intensity * 100).toFixed(0)}%`,
-      });
-    }
+    // Per-panel wall rendering — positions walls within each detected panel
+    for (const panel of (data.panels || [])) {
+      const p = panel.panel;
+      if (!p || p.h < 200) continue; // skip header/status panels
 
-    // Ask walls — red-orange boxes on right side
-    for (const wall of (data.ask_walls || [])) {
-      const rowH = (wall.rows || 10) / frameH;
-      overlays.push({
-        x: 1 - wall.width_pct,
-        y: wall.y_pct - rowH / 2,
-        w: wall.width_pct,
-        h: rowH,
-        color: '#ff4400',
-        label: `ASK ${(wall.intensity * 100).toFixed(0)}%`,
-      });
+      // Panel bounds as fractions of the full frame
+      const px = p.x_pct, py = p.y_pct, pw = p.w_pct, ph = p.h_pct;
+
+      // Bid walls — cyan boxes within this panel
+      for (const wall of (panel.bid_walls || [])) {
+        const rowH = (wall.rows || 10) / p.h;
+        overlays.push({
+          x: px,
+          y: py + (wall.y_pct - rowH / 2) * ph,
+          w: wall.width_pct * pw,
+          h: rowH * ph,
+          color: '#00ccff',
+          label: `B${(wall.intensity * 100).toFixed(0)}`,
+        });
+      }
+
+      // Ask walls — red-orange boxes within this panel
+      for (const wall of (panel.ask_walls || [])) {
+        const rowH = (wall.rows || 10) / p.h;
+        overlays.push({
+          x: px + pw - wall.width_pct * pw,
+          y: py + (wall.y_pct - rowH / 2) * ph,
+          w: wall.width_pct * pw,
+          h: rowH * ph,
+          color: '#ff4400',
+          label: `A${(wall.intensity * 100).toFixed(0)}`,
+        });
+      }
     }
 
     overlays._bias = {
