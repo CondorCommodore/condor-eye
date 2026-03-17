@@ -621,7 +621,9 @@ toolbar.addEventListener('mousedown', startDrag);
 let visionOverlays = [];  // [{x, y, w, h, color, label}]
 let visionActive = false;
 let visionTimer = null;
-const VISION_URL = 'http://localhost:8090/vision/latest';
+// Vision server runs in WSL — try WSL IP first, then localhost
+const VISION_HOSTS = ['http://172.23.137.79:8090', 'http://localhost:8090'];
+let VISION_URL = VISION_HOSTS[0] + '/vision/latest';
 
 function renderVisionOverlays() {
   // Called after redrawStrokes — draws vision boxes on top of pen strokes
@@ -772,7 +774,18 @@ function stopVision() {
   console.log('[vision] overlay polling stopped');
 }
 
-// Auto-start vision polling if the vision server is reachable
-fetch(VISION_URL, { signal: AbortSignal.timeout(1000) })
-  .then(r => { if (r.ok) startVision(); })
-  .catch(() => {});
+// Auto-discover vision server and start polling
+(async function() {
+  for (const host of VISION_HOSTS) {
+    try {
+      const r = await fetch(host + '/vision/status', { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        VISION_URL = host + '/vision/latest';
+        console.log('[vision] found server at', host);
+        startVision();
+        return;
+      }
+    } catch {}
+  }
+  console.log('[vision] no vision server found, overlay disabled');
+})();
