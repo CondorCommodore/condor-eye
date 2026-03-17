@@ -50,7 +50,11 @@ const TOOLS = [
         },
         hwnd: {
           type: "integer",
-          description: "Window handle from condor_eye_windows. If set, brings window to foreground before capture.",
+          description: "Window handle from condor_eye_windows. If set, brings window to foreground before capture (unless no_focus is true).",
+        },
+        no_focus: {
+          type: "boolean",
+          description: "If true, capture the window region without stealing focus. Use with hwnd + region for polling captures that don't interrupt the user.",
         },
         keys: {
           type: "array",
@@ -171,6 +175,7 @@ async function handleCapture(args) {
   if (args.prompt) body.prompt = args.prompt;
   if (args.region) body.region = args.region;
   if (args.hwnd) body.hwnd = args.hwnd;
+  if (args.no_focus) body.no_focus = true;
   if (args.keys) body.keys = args.keys;
   const result = await callApi(host, "POST", "/api/capture", body);
   const response = {

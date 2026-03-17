@@ -29,6 +29,10 @@ pub struct CaptureRequest {
     pub hwnd: Option<u64>,
     /// Optional key combos to send after focus (e.g. ["ctrl+3"] to switch to tab 3).
     pub keys: Option<Vec<String>>,
+    /// If true, capture the window's region without stealing focus.
+    /// Requires `hwnd` to resolve window bounds. Ignored if `hwnd` is not set.
+    #[serde(default)]
+    pub no_focus: bool,
 }
 
 #[derive(Serialize)]
@@ -88,15 +92,17 @@ async fn handle_capture(
     // Serialize captures — one at a time
     let _guard = state.capture_lock.lock().await;
 
-    // Bring target window to foreground if hwnd provided
+    // Bring target window to foreground if hwnd provided (unless no_focus)
     if let Some(hwnd) = req.hwnd {
-        tokio::task::spawn_blocking(move || {
-            crate::windows::focus_window(hwnd);
-        })
-        .await
-        .map_err(|e| api_error(format!("Focus join: {}", e)))?;
-        // Brief delay for window manager to repaint
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        if !req.no_focus {
+            tokio::task::spawn_blocking(move || {
+                crate::windows::focus_window(hwnd);
+            })
+            .await
+            .map_err(|e| api_error(format!("Focus join: {}", e)))?;
+            // Brief delay for window manager to repaint
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
     }
 
     // Send key combos if requested (e.g. switch browser tab)
