@@ -616,3 +616,163 @@ function startDrag(e) {
 
 dragHandle.addEventListener('mousedown', startDrag);
 toolbar.addEventListener('mousedown', startDrag);
+
+// --- Vision overlay: polls bookmap_vision server and draws boxes ---
+let visionOverlays = [];  // [{x, y, w, h, color, label}]
+let visionActive = false;
+let visionTimer = null;
+const VISION_URL = 'http://localhost:8090/vision/latest';
+
+function renderVisionOverlays() {
+  // Called after redrawStrokes — draws vision boxes on top of pen strokes
+  const cw = drawCanvas.width;
+  const ch = drawCanvas.height;
+  if (!cw || !ch || !visionOverlays.length) return;
+
+  drawCtx.save();
+  for (const ov of visionOverlays) {
+    const x = ov.x * cw;
+    const y = ov.y * ch;
+    const w = ov.w * cw;
+    const h = ov.h * ch;
+
+    // Box outline
+    drawCtx.strokeStyle = ov.color || '#00e5ff';
+    drawCtx.lineWidth = 2;
+    drawCtx.setLineDash([6, 3]);
+    drawCtx.strokeRect(x, y, w, h);
+    drawCtx.setLineDash([]);
+
+    // Label background
+    if (ov.label) {
+      drawCtx.font = 'bold 12px monospace';
+      const tm = drawCtx.measureText(ov.label);
+      const lx = x + w + 4;
+      const ly = y + h / 2;
+      drawCtx.fillStyle = 'rgba(0,0,0,0.7)';
+      drawCtx.fillRect(lx - 2, ly - 12, tm.width + 6, 16);
+      drawCtx.fillStyle = ov.color || '#00e5ff';
+      drawCtx.fillText(ov.label, lx, ly);
+    }
+  }
+
+  // Bias bar at top of frame
+  const bias = visionOverlays._bias;
+  if (bias) {
+    const barW = 200;
+    const barH = 8;
+    const barX = (cw - barW) / 2;
+    const barY = 4;
+    const mid = barX + barW / 2;
+    const bidW = bias.bid * barW / 2;
+    const askW = bias.ask * barW / 2;
+
+    drawCtx.fillStyle = '#00aaff';
+    drawCtx.fillRect(mid - bidW, barY, bidW, barH);
+    drawCtx.fillStyle = '#ff4400';
+    drawCtx.fillRect(mid, barY, askW, barH);
+    drawCtx.strokeStyle = '#444';
+    drawCtx.lineWidth = 1;
+    drawCtx.strokeRect(barX, barY, barW, barH);
+
+    // Center tick
+    drawCtx.fillStyle = '#fff';
+    drawCtx.fillRect(mid - 1, barY - 2, 2, barH + 4);
+  }
+  drawCtx.restore();
+}
+
+// Patch redrawStrokes to include vision overlays
+const _origRedrawStrokes = redrawStrokes;
+// Can't reassign const, so override via prototype — instead, hook into the draw cycle
+// by replacing the function reference in the global scope
+const origRedraw = window._redrawAll || null;
+
+// Override: after each redraw, also draw vision overlays
+const _patchedRedraw = function() {
+  // Original strokes
+  drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+  for (const stroke of penStrokes) {
+    renderStroke(stroke.outline, stroke.color);
+  }
+  if (currentPoints && currentPoints.length > 1) {
+    const outline = getStroke(currentPoints, PEN_OPTIONS);
+    renderStroke(outline, penColor);
+  }
+  // Vision overlays on top
+  renderVisionOverlays();
+};
+
+async function fetchVisionData() {
+  try {
+    const resp = await fetch(VISION_URL, { signal: AbortSignal.timeout(2000) });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data || !data.ts) return;
+
+    const overlays = [];
+    const frameW = data.frame_size?.[0] || 1;
+    const frameH = data.frame_size?.[1] || 1;
+
+    // Bid walls — cyan boxes on left side
+    for (const wall of (data.bid_walls || [])) {
+      const rowH = (wall.rows || 10) / frameH;
+      overlays.push({
+        x: 0,
+        y: wall.y_pct - rowH / 2,
+        w: wall.width_pct,
+        h: rowH,
+        color: '#00ccff',
+        label: `BID ${(wall.intensity * 100).toFixed(0)}%`,
+      });
+    }
+
+    // Ask walls — red-orange boxes on right side
+    for (const wall of (data.ask_walls || [])) {
+      const rowH = (wall.rows || 10) / frameH;
+      overlays.push({
+        x: 1 - wall.width_pct,
+        y: wall.y_pct - rowH / 2,
+        w: wall.width_pct,
+        h: rowH,
+        color: '#ff4400',
+        label: `ASK ${(wall.intensity * 100).toFixed(0)}%`,
+      });
+    }
+
+    overlays._bias = {
+      bid: data.bid_intensity || 0,
+      ask: data.ask_intensity || 0,
+    };
+
+    visionOverlays = overlays;
+    _patchedRedraw();
+  } catch {
+    // Vision server not available — clear overlays silently
+    if (visionOverlays.length) {
+      visionOverlays = [];
+      _patchedRedraw();
+    }
+  }
+}
+
+function startVision() {
+  if (visionActive) return;
+  visionActive = true;
+  visionTimer = setInterval(fetchVisionData, 1000);
+  fetchVisionData();
+  console.log('[vision] overlay polling started');
+}
+
+function stopVision() {
+  visionActive = false;
+  if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+  visionOverlays = [];
+  _patchedRedraw();
+  console.log('[vision] overlay polling stopped');
+}
+
+// Auto-start vision polling if the vision server is reachable
+fetch(VISION_URL, { signal: AbortSignal.timeout(1000) })
+  .then(r => { if (r.ok) startVision(); })
+  .catch(() => {});
