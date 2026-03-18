@@ -638,10 +638,12 @@ const WALL_EXPIRE_FRAMES = 5; // disappear after 5 frames without seeing
 let frameCounter = 0;
 
 function renderVisionOverlays() {
-  // Called after redrawStrokes — draws vision boxes on top of pen strokes
+  // Called after redrawStrokes — draws wall indicators on top of pen strokes
   const cw = drawCanvas.width;
   const ch = drawCanvas.height;
-  if (!cw || !ch || !visionOverlays.length) return;
+  if (!cw || !ch) return;
+
+  if (!visionOverlays.length) return;
 
   drawCtx.save();
   for (const ov of visionOverlays) {
@@ -726,13 +728,10 @@ function isInBuffer(xFrac, yFrac) {
   return false;
 }
 
-// Check if an overlay box overlaps any buffer zone
+// Check if an overlay's center falls inside any buffer zone
 function overlapsBuffer(x, y, w, h) {
-  // Check center point and all four corners
   const cx = x + w / 2, cy = y + h / 2;
-  return isInBuffer(cx, cy) ||
-         isInBuffer(x, y) || isInBuffer(x + w, y) ||
-         isInBuffer(x, y + h) || isInBuffer(x + w, y + h);
+  return isInBuffer(cx, cy);
 }
 
 async function fetchVisionData() {
@@ -780,7 +779,7 @@ async function fetchVisionData() {
         const rowH = (wall.rows || 10) / p.h;
         const oy = py + (wall.y_pct - rowH / 2) * ph;
         const oh = rowH * ph;
-        if (overlapsBuffer(px, oy, pw, oh)) continue;
+        if (overlapsBuffer(px, oy, pw * 0.45, oh)) continue;
         overlays.push({
           x: px, y: oy, w: pw * 0.45, h: oh,
           color: '#00ccff', side: 'bid',
