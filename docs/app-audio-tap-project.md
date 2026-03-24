@@ -104,6 +104,13 @@ Why 10s, not 30s: The acceptance criterion is "searchable within 30 seconds of b
 - Rotation: delete oldest chunk when limit exceeded
 - Size: ~940 KB per 10s chunk at 48kHz/16-bit/mono
 
+**Chunk stitching**: each chunk after the first captures an additional **1.5 second preroll** from the prior chunk. The nominal chunk boundary remains 10 seconds for naming, retention, and transcription cadence, but the capture window is shifted earlier:
+
+- chunk `N`: nominal window `[N*10s, (N+1)*10s)`
+- chunk `N`: actual capture window `[N*10s - 1.5s, (N+1)*10s)` clamped at zero for the first chunk
+
+Why: word boundaries and phonemes often straddle a 10-second cut. A 1.5s overlap is cheap in storage and materially reduces clipped openings at chunk boundaries. Downstream extraction should deduplicate repeated text using transcript ids plus a small rolling text match, not by removing the audio overlap itself.
+
 **Format conversion**: WASAPI shared-mode mix format is typically 32-bit float stereo. The capture thread downmixes to mono (average L+R) and converts to 16-bit PCM before writing. Transcription consumes the normalized 16-bit mono WAV, not the native device format. This keeps whisper-server input consistent regardless of the system's audio device configuration.
 
 Use `hound` crate for WAV writing (single-purpose, well-maintained).
@@ -121,6 +128,8 @@ struct ActiveTap {
     target_pid: u32,
     include_tree: bool,
     started_at: DateTime<Utc>,
+    chunk_seconds: u16,         // default 10
+    stitch_ms: u16,             // default 1500
     chunks_written: u64,
     bytes_captured: u64,
     output_dir: PathBuf,
@@ -246,6 +255,7 @@ condor_audio_latest    — get latest transcript text from a tap
 
 ### 1.2 — WAV chunk writing
 - Capture thread writes 10s WAV chunks using `hound` (16-bit PCM, 48kHz, mono after downmix)
+- Add 1.5s preroll stitch overlap to each chunk after the first
 - Chunk rotation (delete oldest when > N per app)
 - Expose `bytes_captured` counter for health monitoring
 - **Acceptance**: WAV files appear in output dir when Zoom/Discord has an active audio session (not just a running process)
@@ -284,6 +294,11 @@ condor_audio_latest    — get latest transcript text from a tap
 - Feed transcript chunks to Ollama for triage (is this actionable?)
 - High-confidence items → Claude API for structured extraction
 - Route to: brainstorm-ui nodes, coord messages, memory files
+
+The detailed gate prompt and extraction schema live in:
+
+- [condor-audio-gate-and-extraction.md](/mnt/data/repos/condor-eye/docs/condor-audio-gate-and-extraction.md)
+- [condor-audio-extraction-schema.json](/mnt/data/repos/condor-eye/docs/condor-audio-extraction-schema.json)
 
 ## Phase 3: Knowledge Management (future)
 

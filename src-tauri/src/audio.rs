@@ -44,6 +44,8 @@ pub struct ActiveTap {
     pub target_pid: u32,
     pub include_tree: bool,
     pub started_at: String,
+    pub chunk_seconds: u16,
+    pub stitch_ms: u16,
     pub chunks_written: u64,
     pub bytes_captured: u64,
     pub output_dir: String,
@@ -73,6 +75,8 @@ pub struct AudioProjectStatus {
     pub supported: bool,
     pub backend: String,
     pub backend_ready: bool,
+    pub chunk_seconds: u16,
+    pub stitch_ms: u16,
     pub target_apps: Vec<AudioTargetApp>,
     pub next_step: String,
 }
@@ -87,6 +91,22 @@ pub struct AudioStatusSnapshot {
     pub audio_transport: String,
     pub audio_output_dir: String,
     pub whisper_url: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AudioChunkPlan {
+    pub chunk_seconds: u16,
+    pub stitch_ms: u16,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AudioChunkWindow {
+    pub chunk_index: u64,
+    pub nominal_start_ms: u64,
+    pub nominal_end_ms: u64,
+    pub capture_start_ms: u64,
+    pub capture_end_ms: u64,
+    pub stitch_ms: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,17 +153,44 @@ pub fn capture_backend_state() -> CaptureBackendState {
     }
 }
 
-pub fn project_status() -> AudioProjectStatus {
+pub fn chunk_plan(config: &AppConfig) -> AudioChunkPlan {
+    let chunk_seconds = config.audio_chunk_seconds.max(1);
+    let max_stitch_ms = u32::from(chunk_seconds) * 1000;
+    let stitch_ms = u16::try_from(u32::from(config.audio_stitch_ms).min(max_stitch_ms))
+        .unwrap_or(chunk_seconds * 1000);
+    AudioChunkPlan {
+        chunk_seconds,
+        stitch_ms,
+    }
+}
+
+pub fn chunk_window(plan: AudioChunkPlan, chunk_index: u64) -> AudioChunkWindow {
+    let chunk_ms = u64::from(plan.chunk_seconds) * 1000;
+    let nominal_start_ms = chunk_index.saturating_mul(chunk_ms);
+    let nominal_end_ms = nominal_start_ms.saturating_add(chunk_ms);
+    let capture_start_ms = nominal_start_ms.saturating_sub(u64::from(plan.stitch_ms));
+    AudioChunkWindow {
+        chunk_index,
+        nominal_start_ms,
+        nominal_end_ms,
+        capture_start_ms,
+        capture_end_ms: nominal_end_ms,
+        stitch_ms: plan.stitch_ms,
+    }
+}
+
+pub fn project_status(config: &AppConfig) -> AudioProjectStatus {
+    let plan = chunk_plan(config);
     let (backend, backend_ready, next_step) = match capture_backend_state() {
         CaptureBackendState::Ready => (
             "windows-wasapi".to_string(),
             true,
-            "backend ready".to_string(),
+            "backend ready; implement chunk writer with stitch overlap".to_string(),
         ),
         CaptureBackendState::Stubbed => (
             "windows-wasapi-stubbed".to_string(),
             false,
-            "implement live session enumeration and per-process capture".to_string(),
+            "implement live session enumeration, per-process capture, and stitched chunk writer".to_string(),
         ),
         CaptureBackendState::Unsupported => (
             "unsupported-platform".to_string(),
@@ -156,6 +203,8 @@ pub fn project_status() -> AudioProjectStatus {
         supported: cfg!(target_os = "windows"),
         backend,
         backend_ready,
+        chunk_seconds: plan.chunk_seconds,
+        stitch_ms: plan.stitch_ms,
         target_apps: default_target_apps(),
         next_step,
     }
@@ -168,7 +217,7 @@ pub async fn status_snapshot(
     let taps = registry.lock().await.taps.values().cloned().collect::<Vec<_>>();
     AudioStatusSnapshot {
         running: true,
-        project: project_status(),
+        project: project_status(config),
         active_taps: taps,
         audio_bind: config.audio_bind.clone(),
         audio_port: config.audio_port,
@@ -209,6 +258,7 @@ pub async fn start_tap(
     include_tree: bool,
 ) -> Result<ActiveTap, String> {
     ensure_audio_dirs(config)?;
+    let plan = chunk_plan(config);
     match capture_backend_state() {
         CaptureBackendState::Ready => {}
         CaptureBackendState::Stubbed => {
@@ -226,6 +276,8 @@ pub async fn start_tap(
         target_pid: pid,
         include_tree,
         started_at: now_rfc3339(),
+        chunk_seconds: plan.chunk_seconds,
+        stitch_ms: plan.stitch_ms,
         chunks_written: 0,
         bytes_captured: 0,
         output_dir: config.audio_output_dir.clone(),
@@ -381,6 +433,27 @@ fn unix_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
+
+    fn test_config() -> AppConfig {
+        AppConfig {
+            api_key: String::new(),
+            redis_url: String::new(),
+            model: String::new(),
+            discord_bridge_url: None,
+            coord_api_url: String::new(),
+            coord_api_token: String::new(),
+            condor_eye_bind: "0.0.0.0".to_string(),
+            condor_eye_port: 9050,
+            audio_bind: "127.0.0.1".to_string(),
+            audio_port: 9051,
+            audio_output_dir: "/tmp/condor-audio".to_string(),
+            audio_transport: "http".to_string(),
+            whisper_url: "http://localhost:8080/inference".to_string(),
+            audio_chunk_seconds: 10,
+            audio_stitch_ms: 1500,
+        }
+    }
 
     #[test]
     fn zoom_matcher_is_case_insensitive() {
@@ -416,5 +489,45 @@ mod tests {
         let target = match_target_app("C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.0\\Discord.exe")
             .expect("discord target");
         assert_eq!(target.id, "discord");
+    }
+
+    #[test]
+    fn chunk_plan_uses_expected_defaults() {
+        let plan = chunk_plan(&test_config());
+        assert_eq!(plan.chunk_seconds, 10);
+        assert_eq!(plan.stitch_ms, 1500);
+    }
+
+    #[test]
+    fn chunk_plan_clamps_stitch_to_chunk_length() {
+        let mut config = test_config();
+        config.audio_stitch_ms = 15_000;
+        let plan = chunk_plan(&config);
+        assert_eq!(plan.chunk_seconds, 10);
+        assert_eq!(plan.stitch_ms, 10_000);
+    }
+
+    #[test]
+    fn first_chunk_does_not_go_negative() {
+        let plan = AudioChunkPlan {
+            chunk_seconds: 10,
+            stitch_ms: 1500,
+        };
+        let window = chunk_window(plan, 0);
+        assert_eq!(window.nominal_start_ms, 0);
+        assert_eq!(window.capture_start_ms, 0);
+        assert_eq!(window.capture_end_ms, 10_000);
+    }
+
+    #[test]
+    fn later_chunks_include_preroll_overlap() {
+        let plan = AudioChunkPlan {
+            chunk_seconds: 10,
+            stitch_ms: 1500,
+        };
+        let window = chunk_window(plan, 2);
+        assert_eq!(window.nominal_start_ms, 20_000);
+        assert_eq!(window.capture_start_ms, 18_500);
+        assert_eq!(window.capture_end_ms, 30_000);
     }
 }

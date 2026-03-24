@@ -16,6 +16,8 @@ pub struct AppConfig {
     pub audio_output_dir: String,
     pub audio_transport: String,
     pub whisper_url: String,
+    pub audio_chunk_seconds: u16,
+    pub audio_stitch_ms: u16,
 }
 
 impl AppConfig {
@@ -53,6 +55,17 @@ impl AppConfig {
                 .unwrap_or_else(|_| "http".to_string()),
             whisper_url: std::env::var("WHISPER_URL")
                 .unwrap_or_else(|_| "http://localhost:8080/inference".to_string()),
+            audio_chunk_seconds: std::env::var("CONDOR_AUDIO_CHUNK_SECONDS")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse::<u16>()
+                .ok()
+                .filter(|value| *value > 0)
+                .unwrap_or(10),
+            audio_stitch_ms: std::env::var("CONDOR_AUDIO_STITCH_MS")
+                .unwrap_or_else(|_| "1500".to_string())
+                .parse::<u16>()
+                .ok()
+                .unwrap_or(1500),
         }
     }
 }

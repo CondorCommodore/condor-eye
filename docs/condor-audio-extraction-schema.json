@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://condor-eye.local/schemas/condor-audio-extraction.schema.json",
+  "title": "Condor Audio Extraction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "transcript_id",
+    "app",
+    "gate",
+    "decisions",
+    "actions",
+    "risks",
+    "questions",
+    "facts",
+    "routing"
+  ],
+  "properties": {
+    "transcript_id": {
+      "type": "string"
+    },
+    "app": {
+      "type": "string",
+      "enum": ["zoom", "discord"]
+    },
+    "chunk_started_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "chunk_seconds": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "stitch_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "confidence", "reason", "topics", "should_escalate"],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["ignore", "memory", "summary", "action", "urgent_action"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reason": {
+          "type": "string"
+        },
+        "topics": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "should_escalate": {
+          "type": "boolean"
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/decision" }
+    },
+    "actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/risk" }
+    },
+    "questions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/question" }
+    },
+    "facts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fact" }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route_coord", "route_brainstorm", "route_memory", "needs_human_review"],
+      "properties": {
+        "route_coord": { "type": "boolean" },
+        "route_brainstorm": { "type": "boolean" },
+        "route_memory": { "type": "boolean" },
+        "needs_human_review": { "type": "boolean" },
+        "project_hints": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snippet"],
+      "properties": {
+        "snippet": { "type": "string" },
+        "speaker": { "type": ["string", "null"] }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "confidence", "evidence"],
+      "properties": {
+        "summary": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "project": { "type": ["string", "null"] },
+        "symbols": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "confidence", "evidence"],
+      "properties": {
+        "summary": { "type": "string" },
+        "owner": { "type": ["string", "null"] },
+        "priority": {
+          "type": ["string", "null"],
+          "enum": ["low", "medium", "high", "urgent", null]
+        },
+        "deadline_hint": { "type": ["string", "null"] },
+        "project": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "severity", "confidence", "evidence"],
+      "properties": {
+        "summary": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "confidence", "evidence"],
+      "properties": {
+        "summary": { "type": "string" },
+        "owner": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "confidence", "evidence"],
+      "properties": {
+        "summary": { "type": "string" },
+        "project": { "type": ["string", "null"] },
+        "symbols": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    }
+  }
+}
