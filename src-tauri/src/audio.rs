@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -54,9 +55,20 @@ pub struct ActiveTap {
     pub last_transcript_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TapRegistry {
     pub taps: HashMap<String, ActiveTap>,
+    #[serde(skip)]
+    pub stop_flags: HashMap<String, Arc<AtomicBool>>,
+}
+
+impl Default for TapRegistry {
+    fn default() -> Self {
+        Self {
+            taps: HashMap::new(),
+            stop_flags: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,9 +137,11 @@ pub fn match_target_app(exe_path: &str) -> Option<AudioTargetApp> {
         .find(|target| matches_target_process(exe_path, target))
 }
 
+const CHUNK_SECONDS: u32 = 10;
+
 pub fn capture_backend_state() -> CaptureBackendState {
     if cfg!(target_os = "windows") {
-        CaptureBackendState::Stubbed
+        CaptureBackendState::Ready
     } else {
         CaptureBackendState::Unsupported
     }
@@ -300,6 +314,7 @@ pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
     Err("Audio session enumeration is only supported on Windows".to_string())
 }
 
+#[cfg(target_os = "windows")]
 pub async fn start_tap(
     registry: &SharedTapRegistry,
     config: &AppConfig,
@@ -308,16 +323,6 @@ pub async fn start_tap(
     include_tree: bool,
 ) -> Result<ActiveTap, String> {
     ensure_audio_dirs(config)?;
-    match capture_backend_state() {
-        CaptureBackendState::Ready => {}
-        CaptureBackendState::Stubbed => {
-            return Err("Audio tap start is not implemented yet in this build".to_string());
-        }
-        CaptureBackendState::Unsupported => {
-            return Err("Audio tap start is only supported on Windows".to_string());
-        }
-    }
-
     let tap_id = format!("{}-{}", app_name, unix_millis());
     let tap = ActiveTap {
         tap_id: tap_id.clone(),
@@ -334,13 +339,46 @@ pub async fn start_tap(
         last_chunk_ts: None,
         last_transcript_path: None,
     };
-
-    registry.lock().await.taps.insert(tap_id, tap.clone());
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = registry.lock().await;
+        guard.taps.insert(tap_id.clone(), tap.clone());
+        guard.stop_flags.insert(tap_id.clone(), Arc::clone(&stop_flag));
+    }
+    let registry_clone = Arc::clone(registry);
+    let output_dir = config.audio_output_dir.clone();
+    let app_name_str = app_name.to_string();
+    let tap_id_clone = tap_id.clone();
+    tokio::task::spawn_blocking(move || {
+        capture_loop(
+            tap_id_clone,
+            pid,
+            include_tree,
+            output_dir,
+            app_name_str,
+            registry_clone,
+            stop_flag,
+        );
+    });
     Ok(tap)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub async fn start_tap(
+    _registry: &SharedTapRegistry,
+    _config: &AppConfig,
+    _app_name: &str,
+    _pid: u32,
+    _include_tree: bool,
+) -> Result<ActiveTap, String> {
+    Err("Audio tap start is only supported on Windows".to_string())
 }
 
 pub async fn stop_tap(registry: &SharedTapRegistry, tap_id: &str) -> Result<ActiveTap, String> {
     let mut guard = registry.lock().await;
+    if let Some(flag) = guard.stop_flags.get(tap_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
     let tap = guard
         .taps
         .get_mut(tap_id)
@@ -475,6 +513,265 @@ fn unix_millis() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn now_rfc3339_compact() -> String {
+    let now = OffsetDateTime::now_utc();
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn write_wav_chunk(
+    path: &std::path::Path,
+    data: &[u8],
+    spec: hound::WavSpec,
+) -> Result<(), String> {
+    let mut writer =
+        hound::WavWriter::create(path, spec).map_err(|e| format!("create wav: {e}"))?;
+    match spec.sample_format {
+        hound::SampleFormat::Float => {
+            for chunk in data.chunks_exact(4) {
+                let s = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                writer
+                    .write_sample(s)
+                    .map_err(|e| format!("write sample: {e}"))?;
+            }
+        }
+        hound::SampleFormat::Int => match spec.bits_per_sample {
+            16 => {
+                for chunk in data.chunks_exact(2) {
+                    let s = i16::from_le_bytes([chunk[0], chunk[1]]);
+                    writer
+                        .write_sample(s)
+                        .map_err(|e| format!("write sample: {e}"))?;
+                }
+            }
+            32 => {
+                for chunk in data.chunks_exact(4) {
+                    let s = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    writer
+                        .write_sample(s)
+                        .map_err(|e| format!("write sample: {e}"))?;
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported bits_per_sample: {}",
+                    spec.bits_per_sample
+                ))
+            }
+        },
+    }
+    writer.finalize().map_err(|e| format!("finalize wav: {e}"))?;
+    Ok(())
+}
+
+/// Per-process loopback capture loop; runs on a spawn_blocking thread.
+#[cfg(target_os = "windows")]
+fn capture_loop(
+    tap_id: String,
+    target_pid: u32,
+    include_tree: bool,
+    output_dir: String,
+    app_name: String,
+    registry: SharedTapRegistry,
+    stop_flag: Arc<AtomicBool>,
+) {
+    use std::collections::VecDeque;
+    use wasapi::{AudioClient, Direction, SampleType, StreamMode};
+
+    let _ = wasapi::initialize_mta();
+    let rt = tokio::runtime::Handle::current();
+
+    // Helper closure: fire-and-forget registry error update.
+    let set_error = |detail: String| {
+        let tap_id = tap_id.clone();
+        let registry = registry.clone();
+        let rt = rt.clone();
+        let _ = rt.spawn(async move {
+            let mut g = registry.lock().await;
+            if let Some(tap) = g.taps.get_mut(&tap_id) {
+                tap.status = TapStatus::Error;
+                tap.status_detail = Some(detail);
+            }
+        });
+    };
+
+    let mut client =
+        match AudioClient::new_application_loopback_client(target_pid, include_tree) {
+            Ok(c) => c,
+            Err(e) => {
+                set_error(format!("loopback client: {e}"));
+                return;
+            }
+        };
+
+    let wave_fmt = match client.get_mixformat() {
+        Ok(f) => f,
+        Err(e) => {
+            set_error(format!("get_mixformat: {e}"));
+            return;
+        }
+    };
+
+    let channels = wave_fmt.get_nchannels() as u16;
+    let sample_rate = wave_fmt.get_samplespersec();
+    let bits_per_sample = wave_fmt.get_bitspersample();
+    let sample_format = match wave_fmt.get_subformat() {
+        Ok(SampleType::Float) => hound::SampleFormat::Float,
+        Ok(SampleType::Int) => hound::SampleFormat::Int,
+        Err(e) => {
+            set_error(format!("get_subformat: {e}"));
+            return;
+        }
+    };
+    let hound_spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample,
+        sample_format,
+    };
+
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: 0,
+    };
+    if let Err(e) = client.initialize_client(&wave_fmt, &Direction::Capture, &mode) {
+        set_error(format!("initialize_client: {e}"));
+        return;
+    }
+
+    let event_handle = match client.set_get_eventhandle() {
+        Ok(h) => h,
+        Err(e) => {
+            set_error(format!("set_get_eventhandle: {e}"));
+            return;
+        }
+    };
+
+    let capture_client = match client.get_audiocaptureclient() {
+        Ok(c) => c,
+        Err(e) => {
+            set_error(format!("get_audiocaptureclient: {e}"));
+            return;
+        }
+    };
+
+    if let Err(e) = client.start_stream() {
+        set_error(format!("start_stream: {e}"));
+        return;
+    }
+
+    let bytes_per_frame = (channels as u32) * (bits_per_sample as u32 / 8);
+    let bytes_per_chunk = (CHUNK_SECONDS * sample_rate * bytes_per_frame) as usize;
+    let mut raw: VecDeque<u8> = VecDeque::new();
+
+    'capture: loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Block up to 100 ms waiting for audio data.
+        event_handle.wait_for_event(100).ok();
+
+        // Drain all available packets from the device.
+        loop {
+            match capture_client.get_next_packet_size() {
+                Ok(Some(0)) | Ok(None) => break,
+                Ok(Some(_)) => {}
+                Err(_) => break 'capture,
+            }
+            if capture_client
+                .read_from_device_to_deque(&mut raw)
+                .is_err()
+            {
+                break 'capture;
+            }
+        }
+
+        // Flush complete 10-second chunks.
+        while raw.len() >= bytes_per_chunk {
+            let chunk: Vec<u8> = raw.drain(..bytes_per_chunk).collect();
+            let chunk_len = chunk.len() as u64;
+            let ts = now_rfc3339_compact();
+            let wav_path = std::path::Path::new(&output_dir)
+                .join("wav")
+                .join(format!("{}_{}.wav", app_name, ts));
+            match write_wav_chunk(&wav_path, &chunk, hound_spec) {
+                Ok(()) => {
+                    let wav_str = wav_path.to_string_lossy().into_owned();
+                    let tap_id_c = tap_id.clone();
+                    let registry_c = registry.clone();
+                    let _ = rt.spawn(async move {
+                        let mut g = registry_c.lock().await;
+                        if let Some(tap) = g.taps.get_mut(&tap_id_c) {
+                            tap.chunks_written += 1;
+                            tap.bytes_captured += chunk_len;
+                            tap.last_chunk_path = Some(wav_str);
+                            tap.last_chunk_ts = Some(ts);
+                            tap.status_detail = None;
+                        }
+                    });
+                }
+                Err(e) => {
+                    let tap_id_c = tap_id.clone();
+                    let registry_c = registry.clone();
+                    let _ = rt.spawn(async move {
+                        let mut g = registry_c.lock().await;
+                        if let Some(tap) = g.taps.get_mut(&tap_id_c) {
+                            tap.status_detail = Some(e);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    // Flush any remaining bytes (< one full chunk).
+    if !raw.is_empty() {
+        let chunk: Vec<u8> = raw.drain(..).collect();
+        let chunk_len = chunk.len() as u64;
+        let ts = now_rfc3339_compact();
+        let wav_path = std::path::Path::new(&output_dir)
+            .join("wav")
+            .join(format!("{}_{}.wav", app_name, ts));
+        if write_wav_chunk(&wav_path, &chunk, hound_spec).is_ok() {
+            let wav_str = wav_path.to_string_lossy().into_owned();
+            let tap_id_c = tap_id.clone();
+            let registry_c = registry.clone();
+            let _ = rt.spawn(async move {
+                let mut g = registry_c.lock().await;
+                if let Some(tap) = g.taps.get_mut(&tap_id_c) {
+                    tap.chunks_written += 1;
+                    tap.bytes_captured += chunk_len;
+                    tap.last_chunk_path = Some(wav_str);
+                    tap.last_chunk_ts = Some(ts);
+                }
+            });
+        }
+    }
+
+    client.stop_stream().ok();
+
+    // Mark tap stopped if it's still in Running state.
+    let tap_id_c = tap_id.clone();
+    let registry_c = registry.clone();
+    let _ = rt.spawn(async move {
+        let mut g = registry_c.lock().await;
+        if let Some(tap) = g.taps.get_mut(&tap_id_c) {
+            if tap.status == TapStatus::Running {
+                tap.status = TapStatus::Stopped;
+            }
+        }
+    });
 }
 
 #[cfg(test)]
