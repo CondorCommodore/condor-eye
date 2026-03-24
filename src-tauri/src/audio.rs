@@ -515,7 +515,8 @@ mod tests {
         let target = match_target_app("C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.0\\Discord.exe")
             .expect("discord target");
         assert_eq!(target.id, "discord");
-    
+    }
+
     #[test]
     fn display_name_strips_windows_path_and_extension() {
         assert_eq!(
