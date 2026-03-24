@@ -193,12 +193,101 @@ pub fn audio_transcript_dir(config: &AppConfig) -> PathBuf {
     Path::new(&config.audio_output_dir).join("transcripts")
 }
 
-pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
-    match capture_backend_state() {
-        CaptureBackendState::Ready => Ok(vec![]),
-        CaptureBackendState::Stubbed => Err("Windows audio backend is scaffolded but session enumeration is not implemented in this build".to_string()),
-        CaptureBackendState::Unsupported => Err("Audio session enumeration is only supported on Windows".to_string()),
+#[cfg(target_os = "windows")]
+fn exe_path_from_pid(pid: u32) -> String {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return format!("pid:{pid}");
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok != 0 {
+            String::from_utf16_lossy(&buf[..size as usize])
+        } else {
+            format!("pid:{pid}")
+        }
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    use wasapi::{DeviceEnumerator, Direction};
+
+    // S_OK=0 (newly initialized) and S_FALSE=1 (already MTA) are both fine.
+    let _ = wasapi::initialize_mta();
+
+    let dev_enum = DeviceEnumerator::new()
+        .map_err(|e| format!("DeviceEnumerator::new: {e}"))?;
+    let collection = dev_enum
+        .get_device_collection(&Direction::Render)
+        .map_err(|e| format!("get_device_collection: {e}"))?;
+
+    let mut sessions: Vec<AudioSessionInfo> = Vec::new();
+    let mut seen_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for device_result in &collection {
+        let device = match device_result {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let manager = match device.get_iaudiosessionmanager() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let session_enum = match manager.get_audiosessionenumerator() {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let count = match session_enum.get_count() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for i in 0..count {
+            let control = match session_enum.get_session(i) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let pid = match control.get_process_id() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if pid == 0 || !seen_pids.insert(pid) {
+                continue;
+            }
+            let state_str = control
+                .get_state()
+                .map(|s| format!("{s:?}").to_lowercase())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let exe_path = exe_path_from_pid(pid);
+            let display_name = std::path::Path::new(&exe_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| exe_path.clone());
+            let matched_target = match_target_app(&exe_path).map(|t| t.id);
+            sessions.push(AudioSessionInfo {
+                session_id: format!("{pid}"),
+                pid,
+                exe_path,
+                display_name,
+                state: state_str,
+                matched_target,
+            });
+        }
+    }
+
+    Ok(sessions)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    Err("Audio session enumeration is only supported on Windows".to_string())
 }
 
 pub async fn start_tap(

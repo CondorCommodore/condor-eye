@@ -25,7 +25,8 @@ hound = "3.5"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 
 [target.'cfg(windows)'.dependencies]
-wasapi = "0.15"
+wasapi = "0.22"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
