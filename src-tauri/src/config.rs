@@ -16,6 +16,7 @@ pub struct AppConfig {
     pub audio_output_dir: String,
     pub audio_transport: String,
     pub whisper_url: String,
+    pub condor_intel_url: String,
 }
 
 impl AppConfig {
@@ -53,6 +54,8 @@ impl AppConfig {
                 .unwrap_or_else(|_| "http".to_string()),
             whisper_url: std::env::var("WHISPER_URL")
                 .unwrap_or_else(|_| "http://localhost:8080/inference".to_string()),
+            condor_intel_url: std::env::var("CONDOR_INTEL_URL")
+                .unwrap_or_default(),
         }
     }
 }

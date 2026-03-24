@@ -349,6 +349,7 @@ pub async fn start_tap(
     let output_dir = config.audio_output_dir.clone();
     let app_name_str = app_name.to_string();
     let whisper_url = config.whisper_url.clone();
+    let condor_intel_url = config.condor_intel_url.clone();
     let tap_id_clone = tap_id.clone();
     tokio::task::spawn_blocking(move || {
         capture_loop(
@@ -358,6 +359,7 @@ pub async fn start_tap(
             output_dir,
             app_name_str,
             whisper_url,
+            condor_intel_url,
             registry_clone,
             stop_flag,
         );
@@ -585,6 +587,7 @@ fn capture_loop(
     output_dir: String,
     app_name: String,
     whisper_url: String,
+    condor_intel_url: String,
     registry: SharedTapRegistry,
     stop_flag: Arc<AtomicBool>,
 ) {
@@ -723,6 +726,7 @@ fn capture_loop(
                         let output_dir_w = output_dir.clone();
                         let app_name_w = app_name.clone();
                         let ts_w = ts.clone();
+                        let condor_intel_url_w = condor_intel_url.clone();
                         let _ = rt.spawn(async move {
                             match post_to_whisper(&whisper_url_w, &wav_str).await {
                                 Ok(text) => {
@@ -735,6 +739,9 @@ fn capture_loop(
                                             tap.last_transcript_path =
                                                 Some(tpath.to_string_lossy().into_owned());
                                         }
+                                    }
+                                    if !condor_intel_url_w.is_empty() {
+                                        let _ = post_to_intel(&condor_intel_url_w, &tap_id_w, &app_name_w, &text).await;
                                     }
                                 }
                                 Err(e) => {
@@ -793,6 +800,7 @@ fn capture_loop(
                 let output_dir_w = output_dir.clone();
                 let app_name_w = app_name.clone();
                 let ts_w = ts.clone();
+                let condor_intel_url_w = condor_intel_url.clone();
                 let _ = rt.spawn(async move {
                     match post_to_whisper(&whisper_url_w, &wav_str).await {
                         Ok(text) => {
@@ -805,6 +813,9 @@ fn capture_loop(
                                     tap.last_transcript_path =
                                         Some(tpath.to_string_lossy().into_owned());
                                 }
+                            }
+                            if !condor_intel_url_w.is_empty() {
+                                let _ = post_to_intel(&condor_intel_url_w, &tap_id_w, &app_name_w, &text).await;
                             }
                         }
                         Err(e) => {
@@ -832,6 +843,28 @@ fn capture_loop(
             }
         }
     });
+}
+
+/// Fire-and-forget POST of a transcript to the condor-intel ingest endpoint.
+/// Errors are logged but never propagated — the audio pipeline must not stall.
+async fn post_to_intel(url: &str, session_id: &str, source_app: &str, raw_text: &str) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "source_app": source_app,
+        "captured_at": now_rfc3339(),
+        "raw_text": raw_text,
+    });
+    let resp = reqwest::Client::new()
+        .post(url)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("condor-intel POST {url}: {e}"))?;
+    if !resp.status().is_success() {
+        eprintln!("[condor_audio] condor-intel {} {}", resp.status(), url);
+    }
+    Ok(())
 }
 
 /// POST a WAV file to a Whisper-compatible transcription endpoint.
