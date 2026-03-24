@@ -348,6 +348,7 @@ pub async fn start_tap(
     let registry_clone = Arc::clone(registry);
     let output_dir = config.audio_output_dir.clone();
     let app_name_str = app_name.to_string();
+    let whisper_url = config.whisper_url.clone();
     let tap_id_clone = tap_id.clone();
     tokio::task::spawn_blocking(move || {
         capture_loop(
@@ -356,6 +357,7 @@ pub async fn start_tap(
             include_tree,
             output_dir,
             app_name_str,
+            whisper_url,
             registry_clone,
             stop_flag,
         );
@@ -582,6 +584,7 @@ fn capture_loop(
     include_tree: bool,
     output_dir: String,
     app_name: String,
+    whisper_url: String,
     registry: SharedTapRegistry,
     stop_flag: Arc<AtomicBool>,
 ) {
@@ -708,18 +711,52 @@ fn capture_loop(
             match write_wav_chunk(&wav_path, &chunk, hound_spec) {
                 Ok(()) => {
                     let wav_str = wav_path.to_string_lossy().into_owned();
-                    let tap_id_c = tap_id.clone();
-                    let registry_c = registry.clone();
-                    let _ = rt.spawn(async move {
-                        let mut g = registry_c.lock().await;
-                        if let Some(tap) = g.taps.get_mut(&tap_id_c) {
-                            tap.chunks_written += 1;
-                            tap.bytes_captured += chunk_len;
-                            tap.last_chunk_path = Some(wav_str);
-                            tap.last_chunk_ts = Some(ts);
-                            tap.status_detail = None;
-                        }
-                    });
+                    {
+                        let tap_id_c = tap_id.clone();
+                        let registry_c = registry.clone();
+                        let wav_str_c = wav_str.clone();
+                        let ts_c = ts.clone();
+                        let _ = rt.spawn(async move {
+                            let mut g = registry_c.lock().await;
+                            if let Some(tap) = g.taps.get_mut(&tap_id_c) {
+                                tap.chunks_written += 1;
+                                tap.bytes_captured += chunk_len;
+                                tap.last_chunk_path = Some(wav_str_c);
+                                tap.last_chunk_ts = Some(ts_c);
+                                tap.status_detail = None;
+                            }
+                        });
+                    }
+                    if !whisper_url.is_empty() {
+                        let tap_id_w = tap_id.clone();
+                        let registry_w = registry.clone();
+                        let whisper_url_w = whisper_url.clone();
+                        let output_dir_w = output_dir.clone();
+                        let app_name_w = app_name.clone();
+                        let ts_w = ts.clone();
+                        let _ = rt.spawn(async move {
+                            match post_to_whisper(&whisper_url_w, &wav_str).await {
+                                Ok(text) => {
+                                    let tpath = std::path::Path::new(&output_dir_w)
+                                        .join("transcripts")
+                                        .join(format!("{}_{}.txt", app_name_w, ts_w));
+                                    if tokio::fs::write(&tpath, &text).await.is_ok() {
+                                        let mut g = registry_w.lock().await;
+                                        if let Some(tap) = g.taps.get_mut(&tap_id_w) {
+                                            tap.last_transcript_path =
+                                                Some(tpath.to_string_lossy().into_owned());
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let mut g = registry_w.lock().await;
+                                    if let Some(tap) = g.taps.get_mut(&tap_id_w) {
+                                        tap.status_detail = Some(format!("whisper: {e}"));
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
                 Err(e) => {
                     let tap_id_c = tap_id.clone();
@@ -745,17 +782,51 @@ fn capture_loop(
             .join(format!("{}_{}.wav", app_name, ts));
         if write_wav_chunk(&wav_path, &chunk, hound_spec).is_ok() {
             let wav_str = wav_path.to_string_lossy().into_owned();
-            let tap_id_c = tap_id.clone();
-            let registry_c = registry.clone();
-            let _ = rt.spawn(async move {
-                let mut g = registry_c.lock().await;
-                if let Some(tap) = g.taps.get_mut(&tap_id_c) {
-                    tap.chunks_written += 1;
-                    tap.bytes_captured += chunk_len;
-                    tap.last_chunk_path = Some(wav_str);
-                    tap.last_chunk_ts = Some(ts);
-                }
-            });
+            {
+                let tap_id_c = tap_id.clone();
+                let registry_c = registry.clone();
+                let wav_str_c = wav_str.clone();
+                let ts_c = ts.clone();
+                let _ = rt.spawn(async move {
+                    let mut g = registry_c.lock().await;
+                    if let Some(tap) = g.taps.get_mut(&tap_id_c) {
+                        tap.chunks_written += 1;
+                        tap.bytes_captured += chunk_len;
+                        tap.last_chunk_path = Some(wav_str_c);
+                        tap.last_chunk_ts = Some(ts_c);
+                    }
+                });
+            }
+            if !whisper_url.is_empty() {
+                let tap_id_w = tap_id.clone();
+                let registry_w = registry.clone();
+                let whisper_url_w = whisper_url.clone();
+                let output_dir_w = output_dir.clone();
+                let app_name_w = app_name.clone();
+                let ts_w = ts.clone();
+                let _ = rt.spawn(async move {
+                    match post_to_whisper(&whisper_url_w, &wav_str).await {
+                        Ok(text) => {
+                            let tpath = std::path::Path::new(&output_dir_w)
+                                .join("transcripts")
+                                .join(format!("{}_{}.txt", app_name_w, ts_w));
+                            if tokio::fs::write(&tpath, &text).await.is_ok() {
+                                let mut g = registry_w.lock().await;
+                                if let Some(tap) = g.taps.get_mut(&tap_id_w) {
+                                    tap.last_transcript_path =
+                                        Some(tpath.to_string_lossy().into_owned());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let mut g = registry_w.lock().await;
+                            if let Some(tap) = g.taps.get_mut(&tap_id_w) {
+                                tap.status_detail = Some(format!("whisper: {e}"));
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -772,6 +843,43 @@ fn capture_loop(
             }
         }
     });
+}
+
+/// POST a WAV file to a Whisper-compatible transcription endpoint.
+///
+/// Accepts both OpenAI-style JSON (`{"text": "..."}`) and plain-text responses.
+/// Returns the transcript string on success.
+pub async fn post_to_whisper(url: &str, wav_path: &str) -> Result<String, String> {
+    let bytes = tokio::fs::read(wav_path)
+        .await
+        .map_err(|e| format!("read wav: {e}"))?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| format!("mime: {e}"))?;
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("model", "whisper-1");
+    let resp = reqwest::Client::new()
+        .post(url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("POST {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("whisper HTTP {}", resp.status()));
+    }
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read response: {e}"))?;
+    // Try OpenAI JSON format {"text": "..."} first, fall back to raw body.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(t) = v["text"].as_str() {
+            return Ok(t.to_string());
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -889,5 +997,15 @@ mod tests {
         assert_eq!(apps.len(), 2);
         assert_eq!(apps[0].id, "zoom");
         assert_eq!(apps[1].id, "discord");
+    }
+
+    #[test]
+    fn rfc3339_compact_is_15_chars_with_t_separator() {
+        let ts = now_rfc3339_compact();
+        assert_eq!(ts.len(), 15, "expected YYYYMMDDTHHmmss (15 chars), got: {ts}");
+        assert_eq!(&ts[8..9], "T", "char 8 should be T separator");
+        // Verify it round-trips through parse_timestamped_name
+        let name = format!("zoom_{ts}.wav");
+        assert!(parse_timestamped_name(&name).is_some(), "should parse as timestamped name");
     }
 }
