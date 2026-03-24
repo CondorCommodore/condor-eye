@@ -193,6 +193,19 @@ pub fn audio_transcript_dir(config: &AppConfig) -> PathBuf {
     Path::new(&config.audio_output_dir).join("transcripts")
 }
 
+pub(crate) fn display_name_from_exe_path(exe_path: &str) -> String {
+    // Works with both Windows (backslash) and Unix (forward-slash) paths.
+    let basename = exe_path
+        .rsplit(|c| c == '/' || c == '')
+        .next()
+        .unwrap_or(exe_path);
+    basename
+        .strip_suffix(".exe")
+        .or_else(|| basename.strip_suffix(".EXE"))
+        .unwrap_or(basename)
+        .to_string()
+}
+
 #[cfg(target_os = "windows")]
 fn exe_path_from_pid(pid: u32) -> String {
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -266,10 +279,7 @@ pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
                 .map(|s| format!("{s:?}").to_lowercase())
                 .unwrap_or_else(|_| "unknown".to_string());
             let exe_path = exe_path_from_pid(pid);
-            let display_name = std::path::Path::new(&exe_path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| exe_path.clone());
+            let display_name = display_name_from_exe_path(&exe_path);
             let matched_target = match_target_app(&exe_path).map(|t| t.id);
             sessions.push(AudioSessionInfo {
                 session_id: format!("{pid}"),
@@ -505,5 +515,81 @@ mod tests {
         let target = match_target_app("C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.0\\Discord.exe")
             .expect("discord target");
         assert_eq!(target.id, "discord");
+    
+    #[test]
+    fn display_name_strips_windows_path_and_extension() {
+        assert_eq!(
+            display_name_from_exe_path(r"C:\Program Files\Zoomin\Zoom.exe"),
+            "Zoom"
+        );
+    }
+
+    #[test]
+    fn display_name_strips_unix_path_and_extension() {
+        assert_eq!(
+            display_name_from_exe_path("/usr/bin/zoom.exe"),
+            "zoom"
+        );
+    }
+
+    #[test]
+    fn display_name_bare_name_no_extension() {
+        assert_eq!(display_name_from_exe_path("discord"), "discord");
+    }
+
+    #[test]
+    fn display_name_bare_exe_no_path() {
+        assert_eq!(display_name_from_exe_path("Discord.exe"), "Discord");
+    }
+
+    #[test]
+    fn display_name_pid_fallback_unchanged() {
+        assert_eq!(display_name_from_exe_path("pid:1234"), "pid:1234");
+    }
+
+    #[test]
+    fn parse_timestamped_wav_name() {
+        let parsed = parse_timestamped_name("discord_20260324T090000.wav")
+            .expect("timestamped wav name");
+        assert_eq!(parsed.0, "discord");
+        assert_eq!(parsed.1.year(), 2026);
+    }
+
+    #[test]
+    fn parse_timestamped_name_bad_format_returns_none() {
+        assert!(parse_timestamped_name("nodash.txt").is_none());
+        assert!(parse_timestamped_name("app_badts.txt").is_none());
+        assert!(parse_timestamped_name("").is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn enumerate_sessions_returns_error_on_non_windows() {
+        let result = enumerate_audio_sessions();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only supported on Windows"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn capture_backend_unsupported_on_non_windows() {
+        assert_eq!(capture_backend_state(), CaptureBackendState::Unsupported);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn project_status_not_supported_on_non_windows() {
+        let status = project_status();
+        assert!(!status.supported);
+        assert!(!status.backend_ready);
+        assert_eq!(status.backend, "unsupported-platform");
+    }
+
+    #[test]
+    fn default_target_apps_has_zoom_and_discord() {
+        let apps = default_target_apps();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].id, "zoom");
+        assert_eq!(apps[1].id, "discord");
     }
 }
