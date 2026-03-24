@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
+mod audio_watcher;
 mod capture;
 mod claude;
 mod compare;
@@ -26,6 +28,7 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub profiles: Mutex<Vec<ExtractionProfile>>,
     pub last_capture: Mutex<Option<LastCapture>>,
+    pub audio_registry: audio::SharedTapRegistry,
 }
 
 /// Main capture-and-compare command.
@@ -404,6 +407,7 @@ fn main() {
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .expect("reqwest client");
+    let audio_registry = std::sync::Arc::new(tokio::sync::Mutex::new(audio::TapRegistry::default()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -412,6 +416,7 @@ fn main() {
             config: Mutex::new(app_config),
             profiles: Mutex::new(profiles),
             last_capture: Mutex::new(None),
+            audio_registry: audio_registry.clone(),
         })
         .invoke_handler(tauri::generate_handler![
             capture_and_compare,
@@ -439,15 +444,21 @@ fn main() {
             }
             // Start Condor Eye HTTP API server
             let ce_config = app.state::<AppState>().config.lock().unwrap().clone();
-            // Bind 0.0.0.0 by default — required for WSL2→Windows access.
-            // WSL2 can't reach Windows 127.0.0.1 (separate network namespace).
-            let ce_bind = std::env::var("CONDOR_EYE_BIND")
-                .unwrap_or_else(|_| "0.0.0.0".to_string());
-            let ce_port = std::env::var("CONDOR_EYE_PORT")
-                .unwrap_or_else(|_| "9050".to_string())
-                .parse::<u16>()
-                .unwrap_or(9050);
-            tauri::async_runtime::spawn(http_api::start_server(ce_config, ce_bind, ce_port));
+            tauri::async_runtime::spawn(http_api::start_server(
+                ce_config.clone(),
+                ce_config.condor_eye_bind.clone(),
+                ce_config.condor_eye_port,
+            ));
+            tauri::async_runtime::spawn(http_api::start_audio_server(
+                ce_config.clone(),
+                ce_config.audio_bind.clone(),
+                ce_config.audio_port,
+                audio_registry.clone(),
+            ));
+            tauri::async_runtime::spawn(audio_watcher::run_watcher(
+                ce_config,
+                audio_registry.clone(),
+            ));
             Ok(())
         })
         .run(tauri::generate_context!())
