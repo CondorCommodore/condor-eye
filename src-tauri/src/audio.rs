@@ -196,7 +196,7 @@ pub fn audio_transcript_dir(config: &AppConfig) -> PathBuf {
 pub(crate) fn display_name_from_exe_path(exe_path: &str) -> String {
     // Works with both Windows (backslash) and Unix (forward-slash) paths.
     let basename = exe_path
-        .rsplit(|c| c == '/' || c == '')
+        .rsplit(|c: char| c == '/' || c == '\\')
         .next()
         .unwrap_or(exe_path);
     basename
