@@ -617,25 +617,14 @@ fn capture_loop(
             }
         };
 
-    let wave_fmt = match client.get_mixformat() {
-        Ok(f) => f,
-        Err(e) => {
-            set_error(format!("get_mixformat: {e}"));
-            return;
-        }
-    };
+    // Application loopback clients do not support get_mixformat() (returns E_NOTIMPL).
+    // Use a standard 32-bit float 44100 Hz stereo format; autoconvert handles mismatches.
+    let wave_fmt = wasapi::WaveFormat::new(32, 32, &SampleType::Float, 44100, 2, None);
 
     let channels = wave_fmt.get_nchannels() as u16;
     let sample_rate = wave_fmt.get_samplespersec();
     let bits_per_sample = wave_fmt.get_bitspersample();
-    let sample_format = match wave_fmt.get_subformat() {
-        Ok(SampleType::Float) => hound::SampleFormat::Float,
-        Ok(SampleType::Int) => hound::SampleFormat::Int,
-        Err(e) => {
-            set_error(format!("get_subformat: {e}"));
-            return;
-        }
-    };
+    let sample_format = hound::SampleFormat::Float;
     let hound_spec = hound::WavSpec {
         channels,
         sample_rate,
