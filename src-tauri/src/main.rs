@@ -543,6 +543,7 @@ fn main() {
             tauri::async_runtime::spawn(audio_watcher::run_watcher(
                 ce_config,
                 audio_registry.clone(),
+                app.handle().clone(),
             ));
             Ok(())
         })
