@@ -427,7 +427,7 @@ fn main() {
             share_coord,
             fetch_vision,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Register Ctrl+Shift+C global shortcut
             let shortcut = Shortcut::new(
                 Some(Modifiers::CONTROL | Modifiers::SHIFT),

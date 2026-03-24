@@ -1,5 +1,4 @@
 use axum::{
-    body::Body,
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
