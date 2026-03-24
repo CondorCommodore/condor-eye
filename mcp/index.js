@@ -10,7 +10,6 @@ import {
 // Detect WSL and use the Windows host gateway IP instead of localhost.
 // WSL2's localhost doesn't route to Windows — need the Hyper-V gateway.
 import { execFileSync } from "child_process";
-import { readFileSync } from "fs";
 function getDefaultHost() {
   // Explicit override — set this on non-Aurora machines (e.g., Surface)
   // to reach the Tauri app via Tailscale: CONDOR_EYE_HOST=100.70.34.55:9050
@@ -23,6 +22,12 @@ function getDefaultHost() {
   return "localhost:9050";
 }
 const DEFAULT_HOST = getDefaultHost();
+function getDefaultAudioHost() {
+  if (process.env.CONDOR_AUDIO_HOST) return process.env.CONDOR_AUDIO_HOST;
+  if (process.env.CONDOR_EYE_AUDIO_HOST) return process.env.CONDOR_EYE_AUDIO_HOST;
+  return "localhost:9051";
+}
+const DEFAULT_AUDIO_HOST = getDefaultAudioHost();
 const HTTP_TIMEOUT_MS = 60_000;
 
 const TOOLS = [
@@ -114,11 +119,82 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "condor_audio_status",
+    description: "Check the Condor Audio API status, configured targets, and active taps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: `Condor Audio host. Default: ${DEFAULT_AUDIO_HOST}` },
+      },
+    },
+  },
+  {
+    name: "condor_audio_start",
+    description: "Start a Condor Audio tap for a target app.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        app: {
+          type: "string",
+          enum: ["zoom", "discord"],
+          description: "Target app to tap.",
+        },
+        pid: {
+          type: "integer",
+          description: "Optional explicit PID override.",
+        },
+        host: { type: "string", description: `Condor Audio host. Default: ${DEFAULT_AUDIO_HOST}` },
+      },
+      required: ["app"],
+    },
+  },
+  {
+    name: "condor_audio_stop",
+    description: "Stop an active audio tap by tap id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tap_id: {
+          type: "string",
+          description: "Tap id returned by condor_audio_start or condor_audio_status.",
+        },
+        host: { type: "string", description: `Condor Audio host. Default: ${DEFAULT_AUDIO_HOST}` },
+      },
+      required: ["tap_id"],
+    },
+  },
+  {
+    name: "condor_audio_latest",
+    description: "Fetch the latest transcript text for an active tap.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tap_id: {
+          type: "string",
+          description: "Tap id returned by condor_audio_start or condor_audio_status.",
+        },
+        host: { type: "string", description: `Condor Audio host. Default: ${DEFAULT_AUDIO_HOST}` },
+      },
+      required: ["tap_id"],
+    },
+  },
 ];
 
 async function isReachable(host) {
   try {
     const resp = await fetch(`http://${host}/api/status`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+async function isAudioReachable(host) {
+  try {
+    const token = await getCaptureToken();
+    const resp = await fetch(`http://${host}/api/condor_audio/status`, {
+      headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(3_000),
     });
     return resp.ok;
@@ -166,8 +242,10 @@ async function getCaptureToken() {
   }
 }
 
-async function callApi(host, method, path, body, authRequired = false) {
-  await ensureRunning(host);
+async function callApi(host, method, path, body, authRequired = false, skipEnsure = false) {
+  if (!skipEnsure) {
+    await ensureRunning(host);
+  }
   const url = `http://${host}${path}`;
   const headers = { "Content-Type": "application/json" };
   if (authRequired) {
@@ -231,6 +309,55 @@ async function handleStatus(args) {
   return callApi(host, "GET", "/api/status");
 }
 
+async function handleAudioStatus(args) {
+  const host = args.host || DEFAULT_AUDIO_HOST;
+  await ensureAudioRunning(host);
+  return callApi(host, "GET", "/api/condor_audio/status", null, true, true);
+}
+
+async function handleAudioStart(args) {
+  const host = args.host || DEFAULT_AUDIO_HOST;
+  await ensureAudioRunning(host);
+  return callApi(host, "POST", "/api/condor_audio/taps", {
+    app: args.app,
+    ...(args.pid ? { pid: args.pid } : {}),
+  }, true, true);
+}
+
+async function handleAudioStop(args) {
+  const host = args.host || DEFAULT_AUDIO_HOST;
+  await ensureAudioRunning(host);
+  return callApi(host, "DELETE", `/api/condor_audio/taps/${encodeURIComponent(args.tap_id)}`, null, true, true);
+}
+
+async function handleAudioLatest(args) {
+  const host = args.host || DEFAULT_AUDIO_HOST;
+  await ensureAudioRunning(host);
+  return callApi(
+    host,
+    "GET",
+    `/api/condor_audio/taps/${encodeURIComponent(args.tap_id)}/latest-transcript`,
+    null,
+    true,
+    true
+  );
+}
+
+async function ensureAudioRunning(host) {
+  if (await isAudioReachable(host)) return;
+  if (host === DEFAULT_AUDIO_HOST) {
+    await ensureRunning(DEFAULT_HOST);
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 400));
+      if (await isAudioReachable(host)) return;
+    }
+  }
+  throw new Error(
+    `Condor Audio API is not running (${host} unreachable). ` +
+    `Start the desktop app and ensure the localhost-only audio listener is enabled.`
+  );
+}
+
 const server = new Server(
   { name: "condor-eye", version: "0.1.0" },
   { capabilities: { tools: {} } }
@@ -247,6 +374,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "condor_eye_windows": result = await handleWindows(args || {}); break;
       case "condor_eye_locate": result = await handleLocate(args || {}); break;
       case "condor_eye_status": result = await handleStatus(args || {}); break;
+      case "condor_audio_status": result = await handleAudioStatus(args || {}); break;
+      case "condor_audio_start": result = await handleAudioStart(args || {}); break;
+      case "condor_audio_stop": result = await handleAudioStop(args || {}); break;
+      case "condor_audio_latest": result = await handleAudioLatest(args || {}); break;
       default: return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };

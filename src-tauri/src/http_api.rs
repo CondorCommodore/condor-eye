@@ -1,6 +1,8 @@
 use axum::{
-    extract::{Query, State},
+    body::Body,
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -9,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::audio::{self, SharedTapRegistry};
 use crate::capture::{self, Region};
 use crate::claude;
 use crate::config::{self, AppConfig};
@@ -21,6 +24,7 @@ pub struct HttpState {
     /// If set, /api/capture requires `Authorization: Bearer <token>` header.
     /// If empty, /api/capture is disabled entirely (returns 403).
     pub capture_token: String,
+    pub audio_registry: Option<SharedTapRegistry>,
 }
 
 // ── Request/Response types ──
@@ -70,8 +74,32 @@ pub struct StatusResponse {
 }
 
 #[derive(Serialize)]
+pub struct AudioStatusResponse {
+    pub running: bool,
+    pub project: audio::AudioProjectStatus,
+    pub active_taps: Vec<audio::ActiveTap>,
+    pub audio_bind: String,
+    pub audio_port: u16,
+    pub audio_transport: String,
+    pub audio_output_dir: String,
+    pub whisper_url: String,
+}
+
+#[derive(Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[derive(Deserialize)]
+pub struct AudioTapStartRequest {
+    pub app: String,
+    pub pid: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct TranscriptQuery {
+    pub since: Option<String>,
+    pub app: Option<String>,
 }
 
 // ── Handlers ──
@@ -85,32 +113,171 @@ async fn handle_status(State(state): State<Arc<HttpState>>) -> Json<StatusRespon
     })
 }
 
+async fn handle_audio_status(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<AudioStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let registry = state
+        .audio_registry
+        .as_ref()
+        .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
+    let snapshot = audio::status_snapshot(&state.config, registry).await;
+    Ok(Json(AudioStatusResponse {
+        running: snapshot.running,
+        project: snapshot.project,
+        active_taps: snapshot.active_taps,
+        audio_bind: snapshot.audio_bind,
+        audio_port: snapshot.audio_port,
+        audio_transport: snapshot.audio_transport,
+        audio_output_dir: snapshot.audio_output_dir,
+        whisper_url: snapshot.whisper_url,
+    }))
+}
+
+async fn handle_audio_sessions(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    match audio::enumerate_audio_sessions() {
+        Ok(sessions) => Ok(Json(serde_json::json!({
+            "ok": true,
+            "count": sessions.len(),
+            "sessions": sessions,
+        }))),
+        Err(error) => Err(api_error(error)),
+    }
+}
+
+async fn handle_audio_tap_start(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AudioTapStartRequest>,
+) -> Result<Json<audio::ActiveTap>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let registry = state
+        .audio_registry
+        .as_ref()
+        .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
+    let pid = req.pid.unwrap_or(0);
+    let tap = audio::start_tap(registry, &state.config, &req.app, pid, true)
+        .await
+        .map_err(api_error)?;
+    Ok(Json(tap))
+}
+
+async fn handle_audio_tap_stop(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    AxumPath(tap_id): AxumPath<String>,
+) -> Result<Json<audio::ActiveTap>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let registry = state
+        .audio_registry
+        .as_ref()
+        .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
+    let tap = audio::stop_tap(registry, &tap_id).await.map_err(api_error)?;
+    Ok(Json(tap))
+}
+
+async fn handle_audio_tap_get(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    AxumPath(tap_id): AxumPath<String>,
+) -> Result<Json<audio::ActiveTap>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let registry = state
+        .audio_registry
+        .as_ref()
+        .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
+    let tap = audio::get_tap(registry, &tap_id)
+        .await
+        .ok_or_else(|| api_error(format!("Tap not found: {}", tap_id)))?;
+    Ok(Json(tap))
+}
+
+async fn handle_audio_tap_latest_chunk(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    AxumPath(tap_id): AxumPath<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let registry = state
+        .audio_registry
+        .as_ref()
+        .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
+    let tap = audio::get_tap(registry, &tap_id)
+        .await
+        .ok_or_else(|| api_error(format!("Tap not found: {}", tap_id)))?;
+    let bytes = audio::latest_chunk_bytes(&tap).map_err(api_error)?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
+        bytes,
+    )
+        .into_response())
+}
+
+async fn handle_audio_transcripts(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<TranscriptQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let items = audio::list_transcripts(
+        &state.config,
+        query.app.as_deref(),
+        query.since.as_deref(),
+    )
+    .map_err(api_error)?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "count": items.len(),
+        "transcripts": items,
+    })))
+}
+
+async fn handle_audio_transcript_get(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    AxumPath(transcript_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let text = audio::read_transcript(&state.config, &transcript_id).map_err(api_error)?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "id": transcript_id,
+        "text": text,
+    })))
+}
+
+async fn handle_audio_latest_transcript(
+    State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
+    AxumPath(tap_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    require_capture_token(&state, &headers)?;
+    let registry = state
+        .audio_registry
+        .as_ref()
+        .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
+    let tap = audio::get_tap(registry, &tap_id)
+        .await
+        .ok_or_else(|| api_error(format!("Tap not found: {}", tap_id)))?;
+    let text = audio::latest_transcript_text(&tap).map_err(api_error)?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "tap_id": tap_id,
+        "text": text,
+    })))
+}
+
 async fn handle_capture(
     State(state): State<Arc<HttpState>>,
     headers: axum::http::HeaderMap,
     Json(req): Json<CaptureRequest>,
 ) -> Result<Json<CaptureResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Gate: paid AI capture requires 1Password-issued token
-    if state.capture_token.is_empty() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Capture disabled: no CAPTURE_TOKEN set. Run: op.exe read 'op://Dev/condor-eye-capture/token' to authorize.".to_string(),
-            }),
-        ));
-    }
-    let auth = headers.get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let expected = format!("Bearer {}", state.capture_token);
-    if auth != expected {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "Invalid or missing Authorization header. Use: Authorization: Bearer <token from op>".to_string(),
-            }),
-        ));
-    }
+    require_capture_token(&state, &headers)?;
 
     let prompt = req.prompt.unwrap_or_else(|| {
         "Describe what you see in this screenshot. Be specific about any data, numbers, charts, or UI elements visible.".to_string()
@@ -347,6 +514,7 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
         config,
         capture_lock: Mutex::new(()),
         capture_token,
+        audio_registry: None,
     });
 
     let app = Router::new()
@@ -372,4 +540,82 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("[CE] HTTP server error: {}", e);
     }
+}
+
+pub async fn start_audio_server(
+    config: AppConfig,
+    bind_addr: String,
+    port: u16,
+    registry: SharedTapRegistry,
+) {
+    let capture_token = std::env::var("CAPTURE_TOKEN").unwrap_or_default();
+    if capture_token.is_empty() {
+        eprintln!("[condor_audio] WARNING: CAPTURE_TOKEN not set — audio API is DISABLED (403)");
+    } else {
+        eprintln!("[condor_audio] CAPTURE_TOKEN set — audio API authorized");
+    }
+    let state = Arc::new(HttpState {
+        config: config.clone(),
+        capture_lock: Mutex::new(()),
+        capture_token,
+        audio_registry: Some(registry),
+    });
+
+    if let Err(err) = audio::ensure_audio_dirs(&config) {
+        eprintln!("[condor_audio] warning: {}", err);
+    }
+
+    let app = Router::new()
+        .route("/api/condor_audio/status", get(handle_audio_status))
+        .route("/api/condor_audio/sessions", get(handle_audio_sessions))
+        .route("/api/condor_audio/taps", post(handle_audio_tap_start))
+        .route("/api/condor_audio/taps/{tap_id}", get(handle_audio_tap_get).delete(handle_audio_tap_stop))
+        .route("/api/condor_audio/taps/{tap_id}/latest", get(handle_audio_tap_latest_chunk))
+        .route("/api/condor_audio/taps/{tap_id}/latest-transcript", get(handle_audio_latest_transcript))
+        .route("/api/condor_audio/transcripts", get(handle_audio_transcripts))
+        .route("/api/condor_audio/transcripts/{transcript_id}", get(handle_audio_transcript_get))
+        .with_state(state);
+
+    let addr = format!("{}:{}", bind_addr, port);
+    eprintln!("[condor_audio] HTTP API starting on {}", addr);
+
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[condor_audio] Warning: failed to bind to {}: {}. Audio API disabled.", addr, e);
+            return;
+        }
+    };
+
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("[condor_audio] HTTP server error: {}", e);
+    }
+}
+
+fn require_capture_token(
+    state: &HttpState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if state.capture_token.is_empty() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Capture disabled: no CAPTURE_TOKEN set. Run: op.exe read 'op://Dev/condor-eye-capture/token' to authorize.".to_string(),
+            }),
+        ));
+    }
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let expected = format!("Bearer {}", state.capture_token);
+    if auth != expected {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Invalid or missing Authorization header. Use: Authorization: Bearer <token from op>".to_string(),
+            }),
+        ));
+    }
+    Ok(())
 }

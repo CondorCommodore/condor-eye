@@ -21,6 +21,11 @@ image = "0.25"
 redis = "0.27"
 dotenvy = "0.15"
 axum = "0.8"
+hound = "3.5"
+time = { version = "0.3", features = ["parsing", "formatting"] }
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.15"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

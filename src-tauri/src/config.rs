@@ -9,6 +9,13 @@ pub struct AppConfig {
     pub discord_bridge_url: Option<String>,
     pub coord_api_url: String,
     pub coord_api_token: String,
+    pub condor_eye_bind: String,
+    pub condor_eye_port: u16,
+    pub audio_bind: String,
+    pub audio_port: u16,
+    pub audio_output_dir: String,
+    pub audio_transport: String,
+    pub whisper_url: String,
 }
 
 impl AppConfig {
@@ -25,8 +32,45 @@ impl AppConfig {
                 .unwrap_or_else(|_| "http://localhost:8800".to_string()),
             coord_api_token: std::env::var("COORD_API_TOKEN")
                 .unwrap_or_default(),
+            condor_eye_bind: std::env::var("CONDOR_EYE_BIND")
+                .unwrap_or_else(|_| "0.0.0.0".to_string()),
+            condor_eye_port: std::env::var("CONDOR_EYE_PORT")
+                .unwrap_or_else(|_| "9050".to_string())
+                .parse::<u16>()
+                .unwrap_or(9050),
+            audio_bind: std::env::var("CONDOR_AUDIO_BIND")
+                .or_else(|_| std::env::var("CONDOR_EYE_AUDIO_BIND"))
+                .unwrap_or_else(|_| "127.0.0.1".to_string()),
+            audio_port: std::env::var("CONDOR_AUDIO_PORT")
+                .or_else(|_| std::env::var("CONDOR_EYE_AUDIO_PORT"))
+                .unwrap_or_else(|_| "9051".to_string())
+                .parse::<u16>()
+                .unwrap_or(9051),
+            audio_output_dir: std::env::var("CONDOR_AUDIO_OUTPUT_DIR")
+                .or_else(|_| std::env::var("CONDOR_EYE_AUDIO_OUTPUT_DIR"))
+                .unwrap_or_else(|_| default_audio_output_dir()),
+            audio_transport: std::env::var("AUDIO_TRANSPORT")
+                .unwrap_or_else(|_| "http".to_string()),
+            whisper_url: std::env::var("WHISPER_URL")
+                .unwrap_or_else(|_| "http://localhost:8080/inference".to_string()),
         }
     }
+}
+
+fn default_audio_output_dir() -> String {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        return Path::new(&local_app_data)
+            .join("condor_audio")
+            .join("audio-taps")
+            .to_string_lossy()
+            .into_owned();
+    }
+
+    std::env::temp_dir()
+        .join("condor_audio")
+        .join("audio-taps")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Per-instrument tick sizes — determines price matching tolerance.
