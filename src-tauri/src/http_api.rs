@@ -487,7 +487,7 @@ async fn handle_screenshot(
 
 // ── Grid config persistence — survives WebView2 cache clears ──
 
-fn grid_config_path() -> std::path::PathBuf {
+pub pub(crate) fn grid_config_path() -> std::path::PathBuf {
     if let Ok(appdata) = std::env::var("APPDATA") {
         std::path::Path::new(&appdata).join("Condor Eye").join("grid.json")
     } else {
