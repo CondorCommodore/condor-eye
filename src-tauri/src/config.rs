@@ -18,13 +18,13 @@ pub struct AppConfig {
     pub whisper_url: String,
     pub audio_chunk_seconds: u16,
     pub audio_stitch_ms: u16,
+    pub condor_intel_url: String,
 }
 
 impl AppConfig {
     pub fn from_env() -> Self {
         Self {
-            api_key: std::env::var("ANTHROPIC_API_KEY")
-                .unwrap_or_default(),
+            api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
             redis_url: std::env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
             model: std::env::var("CLAUDE_MODEL")
@@ -32,8 +32,7 @@ impl AppConfig {
             discord_bridge_url: std::env::var("DISCORD_BRIDGE_URL").ok(),
             coord_api_url: std::env::var("COORD_API_URL")
                 .unwrap_or_else(|_| "http://localhost:8800".to_string()),
-            coord_api_token: std::env::var("COORD_API_TOKEN")
-                .unwrap_or_default(),
+            coord_api_token: std::env::var("COORD_API_TOKEN").unwrap_or_default(),
             condor_eye_bind: std::env::var("CONDOR_EYE_BIND")
                 .unwrap_or_else(|_| "0.0.0.0".to_string()),
             condor_eye_port: std::env::var("CONDOR_EYE_PORT")
@@ -66,6 +65,8 @@ impl AppConfig {
                 .parse::<u16>()
                 .ok()
                 .unwrap_or(1500),
+            condor_intel_url: std::env::var("CONDOR_INTEL_URL")
+                .unwrap_or_else(|_| "http://localhost:8791".to_string()),
         }
     }
 }
@@ -88,15 +89,25 @@ fn default_audio_output_dir() -> String {
 
 /// Per-instrument tick sizes — determines price matching tolerance.
 const TICK_SIZES: &[(&str, f64)] = &[
-    ("SPY", 0.01), ("AAPL", 0.01), ("QQQ", 0.01), ("IWM", 0.01),
-    ("ES", 0.25), ("NQ", 0.25), ("MES", 0.25), ("MNQ", 0.25),
-    ("YM", 1.0), ("RTY", 0.10), ("CL", 0.01), ("GC", 0.10),
+    ("SPY", 0.01),
+    ("AAPL", 0.01),
+    ("QQQ", 0.01),
+    ("IWM", 0.01),
+    ("ES", 0.25),
+    ("NQ", 0.25),
+    ("MES", 0.25),
+    ("MNQ", 0.25),
+    ("YM", 1.0),
+    ("RTY", 0.10),
+    ("CL", 0.01),
+    ("GC", 0.10),
 ];
 
 /// Returns tick size for a symbol. Strips leading '/' for futures.
 pub fn tick_size(symbol: &str) -> f64 {
     let bare = symbol.trim_start_matches('/').to_uppercase();
-    TICK_SIZES.iter()
+    TICK_SIZES
+        .iter()
         .find(|(s, _)| *s == bare)
         .map(|(_, t)| *t)
         .unwrap_or(0.01)
@@ -114,8 +125,8 @@ pub struct ExtractionProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TruthSourceConfig {
     #[serde(rename = "type")]
-    pub source_type: String,       // "redis_stream", "file", "none"
-    pub stream: Option<String>,    // e.g. "market.depth"
+    pub source_type: String, // "redis_stream", "file", "none"
+    pub stream: Option<String>, // e.g. "market.depth"
     #[serde(rename = "matchField")]
     pub match_field: Option<String>, // e.g. "symbol"
 }
@@ -123,7 +134,7 @@ pub struct TruthSourceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComparisonConfig {
     #[serde(rename = "priceToleranceMode")]
-    pub price_tolerance_mode: String,  // "tick_size" or "fixed"
+    pub price_tolerance_mode: String, // "tick_size" or "fixed"
     #[serde(rename = "volumeField")]
     pub volume_field: VolumeFieldMapping,
 }
@@ -164,11 +175,11 @@ pub fn estimate_cost(width: u32, height: u32, model: &str) -> f64 {
     let image_tokens = (width as f64 * height as f64) / 750.0;
     let output_tokens = 500.0;
     let (input_rate, output_rate) = if model.contains("haiku") {
-        (1.0, 5.0)  // per million tokens
+        (1.0, 5.0) // per million tokens
     } else if model.contains("sonnet") {
         (3.0, 15.0)
     } else {
-        (1.0, 5.0)  // default to haiku pricing
+        (1.0, 5.0) // default to haiku pricing
     };
     (image_tokens / 1_000_000.0) * input_rate + (output_tokens / 1_000_000.0) * output_rate
 }
@@ -209,7 +220,8 @@ mod tests {
     #[test]
     fn load_depth_profile() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
+            .parent()
+            .unwrap()
             .join("profiles/depth.json");
         let profile = load_profile(&path).expect("should load depth.json");
         assert_eq!(profile.name, "depth");
@@ -221,10 +233,15 @@ mod tests {
     #[test]
     fn load_all_profiles_finds_five() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
+            .parent()
+            .unwrap()
             .join("profiles");
         let profiles = load_all_profiles(&dir);
-        assert!(profiles.len() >= 5, "expected at least 5 profiles, got {}", profiles.len());
+        assert!(
+            profiles.len() >= 5,
+            "expected at least 5 profiles, got {}",
+            profiles.len()
+        );
     }
 
     #[test]
@@ -232,12 +249,20 @@ mod tests {
         // ~3000 input tokens (typical screenshot), ~500 output tokens
         // Haiku: $1/M input, $5/M output
         let cost = estimate_cost(400, 700, "claude-haiku-4-5-20251001");
-        assert!(cost > 0.001 && cost < 0.01, "haiku cost should be ~$0.005, got {}", cost);
+        assert!(
+            cost > 0.001 && cost < 0.01,
+            "haiku cost should be ~$0.005, got {}",
+            cost
+        );
     }
 
     #[test]
     fn estimate_cost_sonnet() {
         let cost = estimate_cost(400, 700, "claude-sonnet-4-6");
-        assert!(cost > 0.005 && cost < 0.05, "sonnet cost should be more than haiku, got {}", cost);
+        assert!(
+            cost > 0.005 && cost < 0.05,
+            "sonnet cost should be more than haiku, got {}",
+            cost
+        );
     }
 }

@@ -17,20 +17,24 @@ What is wired:
   - `condor_audio_stop`
   - `condor_audio_latest`
 - Audio directories default to `%LOCALAPPDATA%\\condor_audio\\audio-taps\\`
-- The watcher task and audio API scaffolding are present
+- The watcher task and audio API are present
+- Manual taps can resolve a running Zoom or Discord process and start a loopback capture worker
+- Completed WAV chunks are POSTed to whisper and persisted as sibling `.txt` transcripts
+- `condor-eye` can optionally POST successful transcripts to `condor-intel`
 
-What is not implemented yet:
+What is still incomplete / not fully verified:
 
-- Real WASAPI audio session enumeration
-- Real per-process audio capture
-- WAV chunk writing
-- whisper transcription POSTs
+- True Windows audio-session enumeration; current session listing is a process-discovery fallback
+- Watcher auto-start from active audio sessions; current watcher only stops taps when the process exits
 - consent notification / tray indicator
+- Live Windows runtime verification on Aurora against real Zoom and Discord calls
 
 Important consequence:
 
 - `GET /api/condor_audio/status` should work once the app is running
-- `GET /api/condor_audio/sessions` and `POST /api/condor_audio/taps` currently return scaffold/stub errors until the Windows audio backend is implemented
+- `GET /api/condor_audio/sessions` should return running Zoom/Discord processes
+- `POST /api/condor_audio/taps` should start a manual tap for a running process
+- the realistic v1 test path is manual tap start, not watcher auto-start
 
 ## Repo
 
@@ -81,6 +85,7 @@ CONDOR_AUDIO_OUTPUT_DIR=%LOCALAPPDATA%\\condor_audio\\audio-taps
 
 AUDIO_TRANSPORT=http
 WHISPER_URL=http://localhost:8080/inference
+CONDOR_INTEL_URL=http://localhost:8791
 ```
 
 Compatibility aliases still work if older env is present:
@@ -119,11 +124,10 @@ Expected audio log lines:
 [condor_audio] HTTP API starting on 127.0.0.1:9051
 ```
 
-Expected stub behavior for now:
+Expected current behavior:
 
 ```text
-[condor_audio] watcher started
-[condor_audio] session poll: Windows audio backend is scaffolded but session enumeration is not implemented in this build
+[condor_audio] watcher starting: bind=127.0.0.1 port=9051 transport=http
 ```
 
 ## Smoke Test
@@ -143,11 +147,13 @@ This should succeed now:
 - `/api/status`
 - `/api/condor_audio/status`
 
-These are expected to fail until backend work is done:
+Process-discovery fallback should now work:
 
 ```powershell
 curl -H "Authorization: Bearer $env:CAPTURE_TOKEN" http://localhost:9051/api/condor_audio/sessions
 ```
+
+Manual tap start should now work if Zoom or Discord is already running:
 
 ```powershell
 curl -X POST `
@@ -155,6 +161,12 @@ curl -X POST `
   -H "Content-Type: application/json" `
   -d '{"app":"zoom"}' `
   http://localhost:9051/api/condor_audio/taps
+```
+
+Latest transcript should work after the first completed chunk and a healthy whisper response:
+
+```powershell
+curl -H "Authorization: Bearer $env:CAPTURE_TOKEN" http://localhost:9051/api/condor_audio/taps/zoom-REPLACE_ME/latest-transcript
 ```
 
 ## MCP Check
@@ -242,22 +254,21 @@ CONDOR_EYE_PORT=9060
 CONDOR_AUDIO_PORT=9061
 ```
 
-### Audio API up, but sessions/taps fail
+### Audio API up, but taps do not start
 
-That is currently expected. The backend is still scaffold-only on this branch.
+Check:
 
-The next implementation target is `src-tauri/src/audio.rs`:
+- Zoom or Discord is actually running on Windows
+- `POST /api/condor_audio/sessions` shows a matching process
+- whisper is reachable if the tap starts but no transcript appears
 
-- implement Windows session enumeration
-- implement process loopback capture
-- implement WAV chunk writes
-- implement whisper POST + transcript writes
+If tap start still fails, the likely failure point is in `src-tauri/src/audio.rs` inside the Windows loopback worker path.
 
 ### Whisper server unreachable
 
-This is a later-stage issue and should not block the app from starting.
+The app should still start and write WAV chunks, but transcript `.txt` files will not appear.
 
-When transcription work starts, verify:
+Verify:
 
 ```powershell
 curl http://localhost:8080
