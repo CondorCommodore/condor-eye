@@ -1,237 +1,142 @@
 const els = {
-  apiBase: document.getElementById("apiBase"),
+  apiBase: document.getElementById("api-base"),
   token: document.getElementById("token"),
-  channel: document.getElementById("channel"),
-  sessionPid: document.getElementById("sessionPid"),
-  refreshBtn: document.getElementById("refreshBtn"),
-  startBtn: document.getElementById("startBtn"),
-  stopBtn: document.getElementById("stopBtn"),
-  copyBtn: document.getElementById("copyBtn"),
-  stateBadge: document.getElementById("stateBadge"),
-  tapId: document.getElementById("tapId"),
-  updatedAt: document.getElementById("updatedAt"),
-  statusText: document.getElementById("statusText"),
-  sessionsList: document.getElementById("sessionsList"),
-  sessionCount: document.getElementById("sessionCount"),
-  transcriptBox: document.getElementById("transcriptBox"),
+  sessions: document.getElementById("sessions"),
+  sessionCount: document.getElementById("session-count"),
+  taps: document.getElementById("taps"),
+  transcript: document.getElementById("transcript"),
+  transcriptMeta: document.getElementById("transcript-meta"),
+  log: document.getElementById("log"),
 };
 
-const storageKey = "condor-audio-mini-ui";
-const state = {
-  sessions: [],
-  tap: null,
-  pollHandle: null,
-  lastTranscript: "",
-};
+let tapState = [];
 
-function loadPrefs() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
-    if (saved.apiBase) els.apiBase.value = saved.apiBase;
-    if (saved.token) els.token.value = saved.token;
-    if (saved.channel) els.channel.value = saved.channel;
-  } catch (_error) {
-    // Ignore invalid local state.
-  }
-}
-
-function savePrefs() {
-  localStorage.setItem(
-    storageKey,
-    JSON.stringify({
-      apiBase: els.apiBase.value.trim(),
-      token: els.token.value,
-      channel: els.channel.value,
-    }),
-  );
-}
-
-function audioApiBase() {
-  return els.apiBase.value.trim().replace(/\/+$/, "");
-}
-
-function authHeaders() {
+function headers() {
   const token = els.token.value.trim();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const out = { "Content-Type": "application/json" };
+  if (token) out.Authorization = `Bearer ${token}`;
+  return out;
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(`${audioApiBase()}${path}`, {
+function baseUrl(path) {
+  return `${els.apiBase.value.replace(/\/$/, "")}${path}`;
+}
+
+function setText(el, value, empty = false) {
+  el.textContent = value;
+  el.classList.toggle("empty", empty);
+}
+
+function log(message, data) {
+  const stamp = new Date().toLocaleTimeString();
+  const payload = data === undefined ? message : `${message}\n${JSON.stringify(data, null, 2)}`;
+  els.log.textContent = `[${stamp}] ${payload}\n\n${els.log.textContent}`.trim();
+}
+
+async function request(path, options = {}) {
+  const res = await fetch(baseUrl(path), {
     ...options,
     headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
+      ...headers(),
       ...(options.headers || {}),
     },
   });
-
-  const contentType = response.headers.get("content-type") || "";
-  const body = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
-
-  if (!response.ok) {
-    const message =
-      typeof body === "string" ? body : body.error || body.detail || JSON.stringify(body);
-    throw new Error(message || `HTTP ${response.status}`);
+  const text = await res.text();
+  let body = text;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {}
+  if (!res.ok) {
+    throw new Error(typeof body === "string" ? body : JSON.stringify(body));
   }
   return body;
 }
 
-function setStatus(kind, message) {
-  els.stateBadge.textContent = kind;
-  els.stateBadge.className = `badge ${kind.toLowerCase()}`;
-  els.statusText.textContent = message;
+function renderSessions(data) {
+  const sessions = data.sessions || [];
+  els.sessionCount.textContent = `${sessions.length} sessions`;
+  setText(els.sessions, JSON.stringify(sessions, null, 2), sessions.length === 0);
 }
 
-function updateTapUi() {
-  els.tapId.textContent = state.tap?.tap_id || "-";
-  els.updatedAt.textContent = state.tap?.last_chunk_ts || "-";
-  els.stopBtn.disabled = !state.tap || state.tap.status === "stopped";
-}
-
-function renderSessions() {
-  const channel = els.channel.value;
-  const visible = state.sessions.filter((session) => session.matched_target === channel);
-  els.sessionCount.textContent = String(visible.length);
-  els.sessionPid.innerHTML = '<option value="">Auto-detect</option>';
-
-  if (!visible.length) {
-    els.sessionsList.className = "sessions-list empty";
-    els.sessionsList.textContent = `No ${channel} sessions found.`;
+function renderTaps() {
+  if (tapState.length === 0) {
+    els.taps.innerHTML = "";
+    els.taps.classList.add("empty");
+    els.taps.textContent = "No taps yet.";
     return;
   }
-
-  els.sessionsList.className = "sessions-list";
-  els.sessionsList.innerHTML = visible
-    .map(
-      (session) => `
-        <div class="session-card">
-          <strong>${session.display_name} · pid ${session.pid} · ${session.state}</strong>
-          <span>${session.exe_path}</span>
-        </div>
-      `,
-    )
-    .join("");
-
-  for (const session of visible) {
-    const option = document.createElement("option");
-    option.value = String(session.pid);
-    option.textContent = `${session.display_name} (${session.pid})`;
-    els.sessionPid.appendChild(option);
+  els.taps.classList.remove("empty");
+  els.taps.innerHTML = "";
+  for (const tap of tapState) {
+    const item = document.createElement("div");
+    item.className = "tap";
+    item.innerHTML = `
+      <div>
+        <strong>${tap.app_name}</strong>
+        <span class="pill">${tap.status}</span>
+      </div>
+      <div class="meta">pid ${tap.target_pid} · ${tap.tap_id}</div>
+      <div class="row">
+        <button data-action="latest" data-tap="${tap.tap_id}">Latest transcript</button>
+        <button data-action="stop" data-tap="${tap.tap_id}" class="danger">Stop</button>
+      </div>
+    `;
+    els.taps.appendChild(item);
   }
+}
+
+async function refreshStatus() {
+  const body = await request("/api/condor_audio/status");
+  tapState = body.active_taps || [];
+  renderTaps();
+  log("status", body);
 }
 
 async function refreshSessions() {
-  savePrefs();
-  setStatus("Loading", "Refreshing audio sessions.");
-  try {
-    const result = await api("/api/condor_audio/sessions");
-    state.sessions = Array.isArray(result.sessions) ? result.sessions : [];
-    renderSessions();
-    setStatus("Idle", `Loaded ${state.sessions.length} session(s).`);
-  } catch (error) {
-    setStatus("Error", `Session refresh failed: ${error.message}`);
+  const body = await request("/api/condor_audio/sessions");
+  renderSessions(body);
+  log("sessions", body);
+}
+
+async function startTap(app) {
+  const body = await request("/api/condor_audio/taps", {
+    method: "POST",
+    body: JSON.stringify({ app }),
+  });
+  log(`started ${app} tap`, body);
+  await refreshStatus();
+}
+
+async function stopTap(tapId) {
+  const body = await request(`/api/condor_audio/taps/${tapId}`, { method: "DELETE" });
+  log(`stopped ${tapId}`, body);
+  await refreshStatus();
+}
+
+async function latestTranscript(tapId) {
+  const body = await request(`/api/condor_audio/taps/${tapId}/latest-transcript`);
+  els.transcriptMeta.textContent = tapId;
+  setText(els.transcript, body.text || "(empty transcript)", !(body.text || "").trim());
+  log(`latest transcript ${tapId}`, body);
+}
+
+document.getElementById("check-status").addEventListener("click", () => refreshStatus().catch((err) => log("status error", err.message)));
+document.getElementById("load-sessions").addEventListener("click", () => refreshSessions().catch((err) => log("sessions error", err.message)));
+document.getElementById("refresh-taps").addEventListener("click", () => refreshStatus().catch((err) => log("refresh error", err.message)));
+document.getElementById("clear-log").addEventListener("click", () => setText(els.log, "Ready."));
+
+for (const button of document.querySelectorAll(".target-btn")) {
+  button.addEventListener("click", () => startTap(button.dataset.app).catch((err) => log("start error", err.message)));
+}
+
+els.taps.addEventListener("click", (event) => {
+  const target = event.target.closest("button");
+  if (!target) return;
+  const tapId = target.dataset.tap;
+  const action = target.dataset.action;
+  if (action === "stop") {
+    stopTap(tapId).catch((err) => log("stop error", err.message));
+  } else if (action === "latest") {
+    latestTranscript(tapId).catch((err) => log("latest error", err.message));
   }
-}
-
-async function refreshTap() {
-  if (!state.tap?.tap_id) return;
-  try {
-    state.tap = await api(`/api/condor_audio/taps/${encodeURIComponent(state.tap.tap_id)}`);
-    updateTapUi();
-  } catch (error) {
-    stopPolling();
-    setStatus("Error", `Tap refresh failed: ${error.message}`);
-  }
-}
-
-async function refreshTranscript() {
-  if (!state.tap?.tap_id) return;
-  try {
-    const payload = await api(
-      `/api/condor_audio/taps/${encodeURIComponent(state.tap.tap_id)}/latest-transcript`,
-    );
-    if (payload.text && payload.text !== state.lastTranscript) {
-      state.lastTranscript = payload.text;
-      els.transcriptBox.value = payload.text;
-      setStatus("Listening", "Transcript updated.");
-    }
-  } catch (error) {
-    if (!String(error.message).includes("has no transcript yet")) {
-      setStatus("Listening", `Waiting for transcript: ${error.message}`);
-    }
-  }
-}
-
-function startPolling() {
-  stopPolling();
-  state.pollHandle = setInterval(async () => {
-    await refreshTap();
-    await refreshTranscript();
-  }, 1500);
-}
-
-function stopPolling() {
-  if (state.pollHandle) {
-    clearInterval(state.pollHandle);
-    state.pollHandle = null;
-  }
-}
-
-async function startListening() {
-  savePrefs();
-  setStatus("Loading", `Starting ${els.channel.value} tap.`);
-  try {
-    state.tap = await api("/api/condor_audio/taps", {
-      method: "POST",
-      body: JSON.stringify({
-        app: els.channel.value,
-        pid: els.sessionPid.value ? Number(els.sessionPid.value) : undefined,
-      }),
-    });
-    state.lastTranscript = "";
-    els.transcriptBox.value = "";
-    updateTapUi();
-    startPolling();
-    setStatus("Listening", `Tap ${state.tap.tap_id} started.`);
-  } catch (error) {
-    setStatus("Error", `Start failed: ${error.message}`);
-  }
-}
-
-async function stopListening() {
-  if (!state.tap?.tap_id) return;
-  setStatus("Loading", `Stopping ${state.tap.tap_id}.`);
-  try {
-    await api(`/api/condor_audio/taps/${encodeURIComponent(state.tap.tap_id)}`, {
-      method: "DELETE",
-    });
-    stopPolling();
-    state.tap = null;
-    updateTapUi();
-    setStatus("Idle", "Tap stopped.");
-  } catch (error) {
-    setStatus("Error", `Stop failed: ${error.message}`);
-  }
-}
-
-async function copyTranscript() {
-  try {
-    await navigator.clipboard.writeText(els.transcriptBox.value);
-    setStatus("Idle", "Transcript copied.");
-  } catch (error) {
-    setStatus("Error", `Copy failed: ${error.message}`);
-  }
-}
-
-els.channel.addEventListener("change", renderSessions);
-els.apiBase.addEventListener("change", savePrefs);
-els.token.addEventListener("change", savePrefs);
-els.refreshBtn.addEventListener("click", refreshSessions);
-els.startBtn.addEventListener("click", startListening);
-els.stopBtn.addEventListener("click", stopListening);
-els.copyBtn.addEventListener("click", copyTranscript);
-
-loadPrefs();
-renderSessions();
+});

@@ -1,30 +1,30 @@
 # Condor Audio Mini UI
 
-This is a standalone replacement UI for the audio project.
-
-It does not load the Condor Eye GUI.
-It only talks to the local audio API.
+Standalone browser UI for the local `condor_audio` API.
 
 ## Purpose
 
-- choose `Zoom` or `Discord`
-- start a tap
-- read transcript text
-- stop the tap
+This is the operator surface for manual tap testing without opening or depending on the main Condor Eye GUI.
+
+It talks directly to:
+
+- `GET /api/condor_audio/status`
+- `GET /api/condor_audio/sessions`
+- `POST /api/condor_audio/taps`
+- `DELETE /api/condor_audio/taps/{tap_id}`
+- `GET /api/condor_audio/taps/{tap_id}/latest-transcript`
 
 ## Run
 
-1. Start the backend on Aurora.
-2. Keep the audio API on `http://127.0.0.1:9051`.
-3. Open `index.html` in a browser, or serve this folder with any static file server.
-4. Paste the `CAPTURE_TOKEN` into the UI.
+1. Start `condor-eye` so the audio API is listening on `127.0.0.1:9051`.
+2. Open `index.html` in a browser.
+3. Enter the `CAPTURE_TOKEN` value.
+4. Check status, load sessions, then start a Zoom or Discord tap.
 
-## Recommended Backend Mode
+If the API is bound to a different host or port, change the base URL in the UI.
 
-```env
-CONDOR_AUDIO_AUTO_WATCH=0
-CONDOR_AUDIO_BIND=127.0.0.1
-CONDOR_AUDIO_PORT=9051
-```
+## Notes
 
-That keeps the backend in simple manual-tap mode.
+- Browser access requires CORS on the audio API listener.
+- Manual mode is the default path. Auto-watch is optional via `CONDOR_AUDIO_AUTO_WATCH=true`.
+- This UI is intentionally static and dependency-free so it can be copied or hosted anywhere local.

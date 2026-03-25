@@ -2,121 +2,41 @@
 
 ## Goal
 
-Replace the Condor Eye GUI for the audio project with a much smaller local tool.
+Treat `condor_audio` as its own product surface instead of making operators open the full Condor Eye capture window just to start or inspect audio taps.
 
-This replacement should:
+## Chosen Shape
 
-- not load the Condor Eye screen-capture UI
-- not depend on the panel/grid editor
-- let the operator choose a channel/app target
-- show live or near-live speech-to-text output
-- stay local-first on Aurora
+Use a standalone static UI in [`audio-mini-ui/`](../audio-mini-ui) that talks directly to the localhost audio API.
 
-## Minimal Product
+The backend contract is:
 
-A tiny desktop window with three areas:
+- manual tap mode is the default
+- watcher auto-discovery is optional via `CONDOR_AUDIO_AUTO_WATCH=true`
+- browser-based clients are allowed through CORS on the audio listener
 
-1. Channel selector
-   - `Zoom`
-   - `Discord`
-   - optional manual PID/session selector if multiple matches exist
+## Why this is simpler
 
-2. Controls
-   - `Refresh Sessions`
-   - `Start Listening`
-   - `Stop Listening`
-   - status line: `idle`, `listening`, `transcribing`, `error`
+- No dependency on the main frameless Condor Eye GUI
+- No Tauri frontend changes required to test audio
+- Easy to hand off to Aurora: open a browser, paste token, start taps
+- Static files can be served locally or opened directly from disk
 
-3. Transcript view
-   - scrolling plain-text area
-   - newest chunk appended at the bottom
-   - timestamp prefix per chunk
-   - optional copy button
+## Operator path
 
-## Suggested Architecture
+1. Start `condor-eye`
+2. Confirm `http://127.0.0.1:9051/api/condor_audio/status`
+3. Open `audio-mini-ui/index.html`
+4. Paste `CAPTURE_TOKEN`
+5. Load sessions
+6. Start Zoom or Discord tap
+7. Pull latest transcript from the tap card
 
-Keep the capture/transcription backend separate from the GUI:
+## Non-goals
 
-- backend:
-  - local audio API only
-  - `GET /api/condor_audio/sessions`
-  - `POST /api/condor_audio/taps`
-  - `DELETE /api/condor_audio/taps/:id`
-  - `GET /api/condor_audio/taps/:id/latest-transcript`
-  - `GET /api/condor_audio/transcripts?app=...`
+- Replacing the main Condor Eye vision surface
+- Solving true Windows audio-session enumeration in this step
+- Adding tray notifications or consent indicators in this step
 
-- frontend:
-  - a tiny dedicated app or local webview
-  - polls transcript endpoints every 1-2 seconds
-  - does not import or render Condor Eye capture/vision components
+## Follow-up
 
-## Recommended UI Stack
-
-Best fit for speed:
-
-- Option A: plain local web app
-  - one static HTML file
-  - small JS file
-  - talks to `127.0.0.1:9051`
-  - lowest implementation cost
-
-- Option B: tiny Tauri app
-  - separate crate/app from Condor Eye
-  - same Rust backend concepts if needed later
-  - more packaging overhead, but cleaner long-term
-
-For the current task, Option A is the right first move.
-
-## Proposed Screen
-
-Top row:
-
-- target dropdown
-- refresh button
-- start button
-- stop button
-
-Middle row:
-
-- status badge
-- active tap id
-- last transcript timestamp
-
-Main body:
-
-- large read-only transcript pane
-
-Footer:
-
-- backend URL
-- output directory
-- whisper URL
-
-## Data Flow
-
-1. User clicks `Refresh Sessions`
-2. UI calls `GET /api/condor_audio/sessions`
-3. User selects `Zoom` or `Discord`
-4. User clicks `Start Listening`
-5. UI calls `POST /api/condor_audio/taps`
-6. UI polls:
-   - `GET /api/condor_audio/taps/:id`
-   - `GET /api/condor_audio/taps/:id/latest-transcript`
-7. Transcript text is appended into the transcript pane
-8. User clicks `Stop Listening`
-9. UI calls `DELETE /api/condor_audio/taps/:id`
-
-## Why This Is Better
-
-- much smaller surface area than Condor Eye
-- no screen-capture code, no vision code, no panel UI
-- easier to debug the audio path in isolation
-- matches the actual operator need: choose channel, read text
-
-## Implementation Recommendation
-
-Build the replacement as a separate tiny frontend against the existing audio API.
-
-Do not embed it into the Condor Eye GUI.
-Do not make it depend on Condor Eye panel state.
-Treat `condor_audio` as its own product surface.
+If the mini UI path proves stable on Aurora, it becomes the default operator surface for audio capture work and the Tauri window can remain focused on vision/screenshot flows.
