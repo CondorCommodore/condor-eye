@@ -9,6 +9,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::audio::{self, SharedTapRegistry};
 use crate::capture::{self, Region};
@@ -176,7 +177,9 @@ async fn handle_audio_tap_stop(
         .audio_registry
         .as_ref()
         .ok_or_else(|| api_error("Audio registry not configured".to_string()))?;
-    let tap = audio::stop_tap(registry, &tap_id).await.map_err(api_error)?;
+    let tap = audio::stop_tap(registry, &tap_id)
+        .await
+        .map_err(api_error)?;
     Ok(Json(tap))
 }
 
@@ -210,11 +213,7 @@ async fn handle_audio_tap_latest_chunk(
         .await
         .ok_or_else(|| api_error(format!("Tap not found: {}", tap_id)))?;
     let bytes = audio::latest_chunk_bytes(&tap).map_err(api_error)?;
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
-        bytes,
-    )
-        .into_response())
+    Ok(([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response())
 }
 
 async fn handle_audio_transcripts(
@@ -223,12 +222,9 @@ async fn handle_audio_transcripts(
     Query(query): Query<TranscriptQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     require_capture_token(&state, &headers)?;
-    let items = audio::list_transcripts(
-        &state.config,
-        query.app.as_deref(),
-        query.since.as_deref(),
-    )
-    .map_err(api_error)?;
+    let items =
+        audio::list_transcripts(&state.config, query.app.as_deref(), query.since.as_deref())
+            .map_err(api_error)?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "count": items.len(),
@@ -318,12 +314,10 @@ async fn handle_capture(
         let ry = r.y;
         let rw = r.width;
         let rh = r.height;
-        let png = tokio::task::spawn_blocking(move || {
-            capture::capture_region(rx, ry, rw, rh)
-        })
-        .await
-        .map_err(|e| api_error(format!("Task join: {}", e)))?
-        .map_err(|e| api_error(format!("Capture: {}", e)))?;
+        let png = tokio::task::spawn_blocking(move || capture::capture_region(rx, ry, rw, rh))
+            .await
+            .map_err(|e| api_error(format!("Task join: {}", e)))?
+            .map_err(|e| api_error(format!("Capture: {}", e)))?;
         (png, r)
     } else {
         // Full screen capture
@@ -337,20 +331,20 @@ async fn handle_capture(
 
     // Send to Condor Vision
     let start = std::time::Instant::now();
-    let description = claude::describe_screenshot(
-        &state.config.api_key,
-        &png,
-        &state.config.model,
-        &prompt,
-    )
-    .await
-    .map_err(|e| api_error(format!("Vision: {}", e)))?;
+    let description =
+        claude::describe_screenshot(&state.config.api_key, &png, &state.config.model, &prompt)
+            .await
+            .map_err(|e| api_error(format!("Vision: {}", e)))?;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let cost = config::estimate_cost(region.width, region.height, &state.config.model);
     let image = base64::engine::general_purpose::STANDARD.encode(&png);
 
-    eprintln!("[CE] capture response: {}ms, {} chars", latency_ms, description.len());
+    eprintln!(
+        "[CE] capture response: {}ms, {} chars",
+        latency_ms,
+        description.len()
+    );
 
     Ok(Json(CaptureResponse {
         image,
@@ -373,7 +367,11 @@ async fn handle_locate(
         .map_err(|e| api_error(format!("Task join: {}", e)))?
         .map_err(|e| api_error(format!("Capture: {}", e)))?;
 
-    eprintln!("[CE] locate: full screen captured, {} bytes, target: {}", png.len(), req.target);
+    eprintln!(
+        "[CE] locate: full screen captured, {} bytes, target: {}",
+        png.len(),
+        req.target
+    );
 
     let prompt = format!(
         "You are a screen analysis assistant. Look at this screenshot and find: {}\n\n\
@@ -387,17 +385,17 @@ async fn handle_locate(
     );
 
     let start = std::time::Instant::now();
-    let raw = claude::describe_screenshot(
-        &state.config.api_key,
-        &png,
-        &state.config.model,
-        &prompt,
-    )
-    .await
-    .map_err(|e| api_error(format!("Vision: {}", e)))?;
+    let raw =
+        claude::describe_screenshot(&state.config.api_key, &png, &state.config.model, &prompt)
+            .await
+            .map_err(|e| api_error(format!("Vision: {}", e)))?;
     let latency_ms = start.elapsed().as_millis() as u64;
 
-    eprintln!("[CE] locate response ({}ms): {}", latency_ms, &raw[..raw.len().min(200)]);
+    eprintln!(
+        "[CE] locate response ({}ms): {}",
+        latency_ms,
+        &raw[..raw.len().min(200)]
+    );
 
     // Parse the JSON response
     let cleaned = raw
@@ -415,7 +413,10 @@ async fn handle_locate(
                 found: false,
                 bounds: None,
                 confidence: "none".to_string(),
-                description: format!("Failed to parse locate response. Raw: {}", &raw[..raw.len().min(300)]),
+                description: format!(
+                    "Failed to parse locate response. Raw: {}",
+                    &raw[..raw.len().min(300)]
+                ),
             }))
         }
     }
@@ -486,15 +487,22 @@ async fn handle_screenshot(
 
 // ── Vision proxy — forwards to local vision server so JS stays same-origin ──
 
-async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let url = std::env::var("VISION_URL").unwrap_or_else(|_| "http://localhost:8090/vision/latest".to_string());
+async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)>
+{
+    let url = std::env::var("VISION_URL")
+        .unwrap_or_else(|_| "http://localhost:8090/vision/latest".to_string());
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .map_err(|e| api_error(format!("HTTP client: {}", e)))?;
-    let resp = client.get(&url).send().await
+    let resp = client
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| api_error(format!("Vision server unreachable: {}", e)))?;
-    let body: serde_json::Value = resp.json().await
+    let body: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| api_error(format!("Vision parse: {}", e)))?;
     Ok(Json(body))
 }
@@ -531,7 +539,10 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[CE] Warning: failed to bind to {}: {}. HTTP API disabled.", addr, e);
+            eprintln!(
+                "[CE] Warning: failed to bind to {}: {}. HTTP API disabled.",
+                addr, e
+            );
             return;
         }
     };
@@ -564,15 +575,36 @@ pub async fn start_audio_server(
         eprintln!("[condor_audio] warning: {}", err);
     }
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/api/condor_audio/status", get(handle_audio_status))
         .route("/api/condor_audio/sessions", get(handle_audio_sessions))
         .route("/api/condor_audio/taps", post(handle_audio_tap_start))
-        .route("/api/condor_audio/taps/{tap_id}", get(handle_audio_tap_get).delete(handle_audio_tap_stop))
-        .route("/api/condor_audio/taps/{tap_id}/latest", get(handle_audio_tap_latest_chunk))
-        .route("/api/condor_audio/taps/{tap_id}/latest-transcript", get(handle_audio_latest_transcript))
-        .route("/api/condor_audio/transcripts", get(handle_audio_transcripts))
-        .route("/api/condor_audio/transcripts/{transcript_id}", get(handle_audio_transcript_get))
+        .route(
+            "/api/condor_audio/taps/{tap_id}",
+            get(handle_audio_tap_get).delete(handle_audio_tap_stop),
+        )
+        .route(
+            "/api/condor_audio/taps/{tap_id}/latest",
+            get(handle_audio_tap_latest_chunk),
+        )
+        .route(
+            "/api/condor_audio/taps/{tap_id}/latest-transcript",
+            get(handle_audio_latest_transcript),
+        )
+        .route(
+            "/api/condor_audio/transcripts",
+            get(handle_audio_transcripts),
+        )
+        .route(
+            "/api/condor_audio/transcripts/{transcript_id}",
+            get(handle_audio_transcript_get),
+        )
+        .layer(cors)
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);
@@ -581,7 +613,10 @@ pub async fn start_audio_server(
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[condor_audio] Warning: failed to bind to {}: {}. Audio API disabled.", addr, e);
+            eprintln!(
+                "[condor_audio] Warning: failed to bind to {}: {}. Audio API disabled.",
+                addr, e
+            );
             return;
         }
     };

@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub audio_chunk_seconds: u16,
     pub audio_stitch_ms: u16,
     pub condor_intel_url: String,
+    pub audio_auto_watch: bool,
 }
 
 impl AppConfig {
@@ -67,6 +68,15 @@ impl AppConfig {
                 .unwrap_or(1500),
             condor_intel_url: std::env::var("CONDOR_INTEL_URL")
                 .unwrap_or_else(|_| "http://localhost:8791".to_string()),
+            audio_auto_watch: std::env::var("CONDOR_AUDIO_AUTO_WATCH")
+                .ok()
+                .map(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false),
         }
     }
 }

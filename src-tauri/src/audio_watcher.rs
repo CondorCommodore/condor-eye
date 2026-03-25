@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::audio::{
-    enumerate_audio_sessions, process_is_running, start_tap, stop_tap, SharedTapRegistry,
-    TapStatus,
+    enumerate_audio_sessions, process_is_running, start_tap, stop_tap, tap_is_active,
+    SharedTapRegistry, TapStatus,
 };
 use crate::config::AppConfig;
 
@@ -39,7 +39,7 @@ pub async fn run_watcher(config: AppConfig, registry: SharedTapRegistry) {
                     guard
                         .taps
                         .values()
-                        .filter(|tap| tap.status != TapStatus::Stopped)
+                        .filter(|tap| tap_is_active(tap))
                         .map(|tap| tap.app_name.clone())
                         .collect::<std::collections::HashSet<_>>()
                 };
@@ -90,8 +90,7 @@ pub async fn run_watcher(config: AppConfig, registry: SharedTapRegistry) {
                         .taps
                         .values()
                         .filter(|tap| {
-                            tap.status != TapStatus::Stopped
-                                && !discovered.contains(tap.app_name.as_str())
+                            tap_is_active(tap) && !discovered.contains(tap.app_name.as_str())
                         })
                         .map(|tap| tap.tap_id.clone())
                         .collect::<Vec<_>>()

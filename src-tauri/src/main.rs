@@ -45,7 +45,10 @@ async fn capture_and_compare(
     let cfg = state.config.lock().unwrap().clone();
     let profiles = state.profiles.lock().unwrap().clone();
 
-    eprintln!("[VV] capture_and_compare: symbol={}, mode={}, profile={}", symbol, mode, profile_name);
+    eprintln!(
+        "[VV] capture_and_compare: symbol={}, mode={}, profile={}",
+        symbol, mode, profile_name
+    );
 
     // Find the requested profile
     let profile = profiles
@@ -71,13 +74,21 @@ async fn capture_and_compare(
     let cap_h = size.height;
 
     // 3. Capture screen region (blocking I/O)
-    eprintln!("[VV] capturing region: x={}, y={}, w={}, h={}", cap_x, cap_y, cap_w, cap_h);
-    let png = tokio::task::spawn_blocking(move || {
-        capture::capture_region(cap_x, cap_y, cap_w, cap_h)
-    })
-    .await
-    .map_err(|e| { eprintln!("[VV] ERROR capture join: {}", e); format!("Task join: {}", e) })?
-    .map_err(|e| { eprintln!("[VV] ERROR capture: {}", e); format!("Capture: {}", e) })?;
+    eprintln!(
+        "[VV] capturing region: x={}, y={}, w={}, h={}",
+        cap_x, cap_y, cap_w, cap_h
+    );
+    let png =
+        tokio::task::spawn_blocking(move || capture::capture_region(cap_x, cap_y, cap_w, cap_h))
+            .await
+            .map_err(|e| {
+                eprintln!("[VV] ERROR capture join: {}", e);
+                format!("Task join: {}", e)
+            })?
+            .map_err(|e| {
+                eprintln!("[VV] ERROR capture: {}", e);
+                format!("Capture: {}", e)
+            })?;
     eprintln!("[VV] captured {} bytes PNG", png.len());
 
     // 4. Restore frame
@@ -85,16 +96,20 @@ async fn capture_and_compare(
 
     // 5. Send to Claude API (async — profile provides the prompt)
     let start = std::time::Instant::now();
-    let extracted = claude::extract_from_screenshot(
-        &cfg.api_key,
-        &png,
-        &cfg.model,
-        &profile.prompt,
-    )
-    .await
-    .map_err(|e| { eprintln!("[VV] ERROR extraction: {}", e); format!("Extraction: {}", e) })?;
+    let extracted =
+        claude::extract_from_screenshot(&cfg.api_key, &png, &cfg.model, &profile.prompt)
+            .await
+            .map_err(|e| {
+                eprintln!("[VV] ERROR extraction: {}", e);
+                format!("Extraction: {}", e)
+            })?;
     let api_latency = start.elapsed().as_millis() as u64;
-    eprintln!("[VV] extraction done in {}ms: {} bids, {} asks", api_latency, extracted.bids.len(), extracted.asks.len());
+    eprintln!(
+        "[VV] extraction done in {}ms: {} bids, {} asks",
+        api_latency,
+        extracted.bids.len(),
+        extracted.asks.len()
+    );
 
     let cost = config::estimate_cost(cap_w, cap_h, &cfg.model);
 
@@ -131,20 +146,31 @@ async fn capture_and_compare(
         .clone()
         .unwrap_or_else(|| "market.depth".to_string());
     let sym = symbol.clone();
-    let truth_result = tokio::task::spawn_blocking(move || {
-        truth::snapshot_depth(&redis_url, &stream, &sym)
-    })
-    .await
-    .map_err(|e| format!("Task join: {}", e))?
-    .map_err(|e| { eprintln!("[VV] ERROR truth: {}", e); format!("Truth: {}", e) })?;
-    eprintln!("[VV] truth snapshot: {} bids, {} asks", truth_result.bids.len(), truth_result.asks.len());
+    let truth_result =
+        tokio::task::spawn_blocking(move || truth::snapshot_depth(&redis_url, &stream, &sym))
+            .await
+            .map_err(|e| format!("Task join: {}", e))?
+            .map_err(|e| {
+                eprintln!("[VV] ERROR truth: {}", e);
+                format!("Truth: {}", e)
+            })?;
+    eprintln!(
+        "[VV] truth snapshot: {} bids, {} asks",
+        truth_result.bids.len(),
+        truth_result.asks.len()
+    );
 
     // 8. Compare
     let mut report = compare::compare_books(&extracted, &truth_result);
     report.api_latency_ms = api_latency;
     report.estimated_cost_usd = cost;
-    eprintln!("[VV] result: {:?} | mismatches={}, missing={}, extra={}",
-        report.overall, report.mismatches.len(), report.missing.len(), report.extra.len());
+    eprintln!(
+        "[VV] result: {:?} | mismatches={}, missing={}, extra={}",
+        report.overall,
+        report.mismatches.len(),
+        report.missing.len(),
+        report.extra.len()
+    );
 
     Ok(report)
 }
@@ -163,7 +189,10 @@ async fn capture_free(
         prompt
     };
 
-    eprintln!("[VV] free capture: prompt={}", &user_prompt[..user_prompt.len().min(100)]);
+    eprintln!(
+        "[VV] free capture: prompt={}",
+        &user_prompt[..user_prompt.len().min(100)]
+    );
 
     // Hide, capture, show
     let _ = window.hide();
@@ -172,12 +201,10 @@ async fn capture_free(
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let (cx, cy, cw, ch) = (pos.x, pos.y, size.width, size.height);
 
-    let png = tokio::task::spawn_blocking(move || {
-        capture::capture_region(cx, cy, cw, ch)
-    })
-    .await
-    .map_err(|e| format!("Task join: {}", e))?
-    .map_err(|e| format!("Capture: {}", e))?;
+    let png = tokio::task::spawn_blocking(move || capture::capture_region(cx, cy, cw, ch))
+        .await
+        .map_err(|e| format!("Task join: {}", e))?
+        .map_err(|e| format!("Capture: {}", e))?;
 
     let _ = window.show();
     eprintln!("[VV] free: captured {} bytes", png.len());
@@ -276,7 +303,8 @@ async fn share_discord(
     };
 
     let channel = channel.unwrap_or_else(|| "fleet".to_string());
-    let bridge_url = cfg.discord_bridge_url
+    let bridge_url = cfg
+        .discord_bridge_url
         .unwrap_or_else(|| "http://localhost:8770".to_string());
 
     let client = reqwest::Client::new();
@@ -351,12 +379,19 @@ async fn share_coord(
 
 /// Fetch vision overlay data from the local vision server via IPC (bypasses CSP).
 #[tauri::command]
-async fn fetch_vision(client: tauri::State<'_, reqwest::Client>) -> Result<serde_json::Value, String> {
+async fn fetch_vision(
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<serde_json::Value, String> {
     let url = std::env::var("VISION_URL")
         .unwrap_or_else(|_| "http://localhost:8090/vision/latest".to_string());
-    let resp = client.get(&url).send().await
+    let resp = client
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| format!("Vision unreachable: {}", e))?;
-    let body: serde_json::Value = resp.json().await
+    let body: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| format!("Vision parse: {}", e))?;
     Ok(body)
 }
@@ -370,7 +405,11 @@ fn main() {
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("../.env");
     if let Ok(appdata) = std::env::var("APPDATA") {
-        let _ = dotenvy::from_path(std::path::Path::new(&appdata).join("Condor Eye").join(".env"));
+        let _ = dotenvy::from_path(
+            std::path::Path::new(&appdata)
+                .join("Condor Eye")
+                .join(".env"),
+        );
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -383,9 +422,15 @@ fn main() {
     // Load profiles from the profiles/ directory.
     // Try: exe parent (release), cwd (dev), cwd parent (dev from src-tauri/).
     let profiles_dir = [
-        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("profiles"))),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("profiles"))),
         Some(std::env::current_dir().unwrap_or_default().join("profiles")),
-        Some(std::env::current_dir().unwrap_or_default().join("../profiles")),
+        Some(
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join("../profiles"),
+        ),
     ]
     .into_iter()
     .flatten()
@@ -396,7 +441,8 @@ fn main() {
     if profiles.is_empty() {
         eprintln!("Warning: no profiles found in {}", profiles_dir.display());
     } else {
-        eprintln!("Loaded {} profile(s): {:?}",
+        eprintln!(
+            "Loaded {} profile(s): {:?}",
             profiles.len(),
             profiles.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
@@ -407,7 +453,8 @@ fn main() {
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .expect("reqwest client");
-    let audio_registry = std::sync::Arc::new(tokio::sync::Mutex::new(audio::TapRegistry::default()));
+    let audio_registry =
+        std::sync::Arc::new(tokio::sync::Mutex::new(audio::TapRegistry::default()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -455,10 +502,16 @@ fn main() {
                 ce_config.audio_port,
                 audio_registry.clone(),
             ));
-            tauri::async_runtime::spawn(audio_watcher::run_watcher(
-                ce_config,
-                audio_registry.clone(),
-            ));
+            if ce_config.audio_auto_watch {
+                tauri::async_runtime::spawn(audio_watcher::run_watcher(
+                    ce_config,
+                    audio_registry.clone(),
+                ));
+            } else {
+                eprintln!(
+                    "[condor_audio] watcher disabled (set CONDOR_AUDIO_AUTO_WATCH=1 to enable auto-discovery)"
+                );
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

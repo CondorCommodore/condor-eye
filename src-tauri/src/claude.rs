@@ -1,6 +1,6 @@
+use crate::compare::ExtractionResult;
 use base64::Engine;
 use reqwest::Client;
-use crate::compare::ExtractionResult;
 
 /// Error types for Claude API extraction.
 #[derive(Debug)]
@@ -91,7 +91,11 @@ pub async fn extract_from_screenshot(
         .as_str()
         .ok_or(ExtractionError::Parse("No text in response".into()))?;
 
-    eprintln!("[VV] Claude raw response ({} chars):\n{}", content_text.len(), content_text);
+    eprintln!(
+        "[VV] Claude raw response ({} chars):\n{}",
+        content_text.len(),
+        content_text
+    );
 
     // Strip markdown code fences if present
     let json_str = content_text
@@ -101,10 +105,13 @@ pub async fn extract_from_screenshot(
         .trim_end_matches("```")
         .trim();
 
-    let result: ExtractionResult = serde_json::from_str(json_str)
-        .map_err(|e| ExtractionError::Parse(
-            format!("JSON parse error: {} — raw: {}", e, &json_str[..json_str.len().min(200)])
-        ))?;
+    let result: ExtractionResult = serde_json::from_str(json_str).map_err(|e| {
+        ExtractionError::Parse(format!(
+            "JSON parse error: {} — raw: {}",
+            e,
+            &json_str[..json_str.len().min(200)]
+        ))
+    })?;
 
     Ok(result)
 }
@@ -182,8 +189,7 @@ pub fn parse_extraction(json_str: &str) -> Result<ExtractionResult, String> {
         .trim_end_matches("```")
         .trim();
 
-    serde_json::from_str(cleaned)
-        .map_err(|e| format!("Parse error: {}", e))
+    serde_json::from_str(cleaned).map_err(|e| format!("Parse error: {}", e))
 }
 
 #[cfg(test)]

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Condor Audio Mini UI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">Condor Audio</p>
+        <h1>Mini Listener</h1>
+        <p class="lede">A small local UI for selecting a channel and reading transcript text without loading the Condor Eye GUI.</p>
+      </header>
+
+      <section class="panel panel-config">
+        <div class="field">
+          <label for="apiBase">Audio API</label>
+          <input id="apiBase" type="text" value="http://127.0.0.1:9051" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="token">Capture Token</label>
+          <input id="token" type="password" placeholder="Bearer token" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="channel">Channel</label>
+          <select id="channel">
+            <option value="zoom">Zoom</option>
+            <option value="discord">Discord</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sessionPid">PID Override</label>
+          <select id="sessionPid">
+            <option value="">Auto-detect</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button id="refreshBtn" type="button">Refresh Sessions</button>
+          <button id="startBtn" type="button">Start Listening</button>
+          <button id="stopBtn" type="button" class="secondary" disabled>Stop Listening</button>
+        </div>
+      </section>
+
+      <section class="panel panel-status">
+        <div class="status-row">
+          <div>
+            <span class="label">State</span>
+            <strong id="stateBadge" class="badge idle">Idle</strong>
+          </div>
+          <div>
+            <span class="label">Tap</span>
+            <strong id="tapId">-</strong>
+          </div>
+          <div>
+            <span class="label">Updated</span>
+            <strong id="updatedAt">-</strong>
+          </div>
+        </div>
+        <p id="statusText" class="status-text">Ready.</p>
+      </section>
+
+      <section class="panel panel-sessions">
+        <div class="panel-head">
+          <h2>Detected Sessions</h2>
+          <span id="sessionCount">0</span>
+        </div>
+        <div id="sessionsList" class="sessions-list empty">No sessions loaded.</div>
+      </section>
+
+      <section class="panel panel-transcript">
+        <div class="panel-head">
+          <h2>Transcript</h2>
+          <button id="copyBtn" type="button" class="secondary">Copy Text</button>
+        </div>
+        <textarea id="transcriptBox" readonly placeholder="Transcript text will appear here."></textarea>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+  </html>

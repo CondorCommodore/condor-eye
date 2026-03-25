@@ -1,5 +1,5 @@
-use redis::Client;
 use crate::compare::{DepthSnapshot, TruthLevel};
+use redis::Client;
 
 #[derive(Debug)]
 pub enum TruthError {
@@ -27,9 +27,9 @@ pub fn snapshot_depth(
     stream: &str,
     symbol: &str,
 ) -> Result<DepthSnapshot, TruthError> {
-    let client = Client::open(redis_url)
-        .map_err(|e| TruthError::Connection(e.to_string()))?;
-    let mut conn = client.get_connection()
+    let client = Client::open(redis_url).map_err(|e| TruthError::Connection(e.to_string()))?;
+    let mut conn = client
+        .get_connection()
         .map_err(|e| TruthError::Connection(e.to_string()))?;
 
     // XREVRANGE <stream> + - COUNT 50
@@ -45,22 +45,18 @@ pub fn snapshot_depth(
 
     for entry in entries {
         // Extract the "data" field from the stream entry
-        let data_str: Option<String> = entry.map.get("data").and_then(|v| {
-            match v {
-                redis::Value::BulkString(d) => String::from_utf8(d.clone()).ok(),
-                _ => None,
-            }
+        let data_str: Option<String> = entry.map.get("data").and_then(|v| match v {
+            redis::Value::BulkString(d) => String::from_utf8(d.clone()).ok(),
+            _ => None,
         });
 
         if let Some(json_str) = data_str {
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&json_str) {
                 if msg["symbol"].as_str() == Some(symbol) {
-                    let bids: Vec<TruthLevel> = serde_json::from_value(
-                        msg["bids"].clone(),
-                    ).unwrap_or_default();
-                    let asks: Vec<TruthLevel> = serde_json::from_value(
-                        msg["asks"].clone(),
-                    ).unwrap_or_default();
+                    let bids: Vec<TruthLevel> =
+                        serde_json::from_value(msg["bids"].clone()).unwrap_or_default();
+                    let asks: Vec<TruthLevel> =
+                        serde_json::from_value(msg["asks"].clone()).unwrap_or_default();
 
                     let stream_id = entry.id.clone();
                     let timestamp = stream_id
@@ -73,10 +69,7 @@ pub fn snapshot_depth(
                         stream_id,
                         timestamp,
                         symbol: symbol.to_string(),
-                        source: msg["source"]
-                            .as_str()
-                            .unwrap_or("unknown")
-                            .to_string(),
+                        source: msg["source"].as_str().unwrap_or("unknown").to_string(),
                         bids,
                         asks,
                     });
@@ -111,7 +104,11 @@ mod tests {
         let result = snapshot_depth(&url, "market.depth", "SPY");
         match result {
             Ok(snap) => {
-                println!("Got snapshot: {} bids, {} asks", snap.bids.len(), snap.asks.len());
+                println!(
+                    "Got snapshot: {} bids, {} asks",
+                    snap.bids.len(),
+                    snap.asks.len()
+                );
                 assert!(!snap.bids.is_empty());
                 assert!(!snap.asks.is_empty());
             }

@@ -50,7 +50,10 @@ mod platform {
 
     #[link(name = "user32")]
     extern "system" {
-        fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(HWND, LPARAM) -> BOOL, lParam: LPARAM) -> BOOL;
+        fn EnumWindows(
+            lpEnumFunc: unsafe extern "system" fn(HWND, LPARAM) -> BOOL,
+            lParam: LPARAM,
+        ) -> BOOL;
         fn GetWindowTextW(hWnd: HWND, lpString: *mut u16, nMaxCount: i32) -> i32;
         fn GetWindowTextLengthW(hWnd: HWND) -> i32;
         fn IsWindowVisible(hWnd: HWND) -> BOOL;
@@ -61,7 +64,15 @@ mod platform {
         fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
         fn IsIconic(hWnd: HWND) -> BOOL;
         fn keybd_event(bVk: u8, bScan: u8, dwFlags: u32, dwExtraInfo: usize);
-        fn SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X: i32, Y: i32, cx: i32, cy: i32, uFlags: u32) -> BOOL;
+        fn SetWindowPos(
+            hWnd: HWND,
+            hWndInsertAfter: HWND,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: u32,
+        ) -> BOOL;
         fn GetForegroundWindow() -> HWND;
         fn GetCurrentThreadId() -> DWORD;
         fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) -> BOOL;
@@ -105,8 +116,13 @@ mod platform {
         }
 
         if let Some(vk) = key {
-            eprintln!("[CE] send_key_combo: '{}' → modifiers={:02X?}, key=0x{:02X}, fg=0x{:X}",
-                      combo, modifiers, vk, unsafe { GetForegroundWindow() } as u64);
+            eprintln!(
+                "[CE] send_key_combo: '{}' → modifiers={:02X?}, key=0x{:02X}, fg=0x{:X}",
+                combo,
+                modifiers,
+                vk,
+                unsafe { GetForegroundWindow() } as u64
+            );
             unsafe {
                 // Press modifiers
                 for &m in &modifiers {
@@ -219,8 +235,10 @@ mod platform {
             let fg_thread = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
             let our_thread = GetCurrentThreadId();
 
-            eprintln!("[CE] focus_window: target=0x{:X}, fg=0x{:X}, fg_thread={}, our_thread={}",
-                      hwnd, fg_hwnd as u64, fg_thread, our_thread);
+            eprintln!(
+                "[CE] focus_window: target=0x{:X}, fg=0x{:X}, fg_thread={}, our_thread={}",
+                hwnd, fg_hwnd as u64, fg_thread, our_thread
+            );
 
             // Attach our input to the foreground window's thread
             // This allows SetForegroundWindow to succeed from a background process
@@ -245,8 +263,12 @@ mod platform {
             }
 
             let new_fg = GetForegroundWindow();
-            eprintln!("[CE] focus_window: SetForegroundWindow={}, new_fg=0x{:X}, match={}",
-                      fg_result, new_fg as u64, new_fg == h);
+            eprintln!(
+                "[CE] focus_window: SetForegroundWindow={}, new_fg=0x{:X}, match={}",
+                fg_result,
+                new_fg as u64,
+                new_fg == h
+            );
 
             fg_result != 0
         }
@@ -365,8 +387,7 @@ mod tests {
         assert!(json.contains("\"class_name\":\"TestClass\""));
 
         // Round-trip
-        let deserialized: WindowInfo =
-            serde_json::from_str(&json).expect("deserialization failed");
+        let deserialized: WindowInfo = serde_json::from_str(&json).expect("deserialization failed");
         assert_eq!(deserialized.hwnd, info.hwnd);
         assert_eq!(deserialized.title, info.title);
         assert_eq!(deserialized.pid, info.pid);

@@ -125,7 +125,6 @@ pub struct AudioChunkWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureBackendState {
     Ready,
-    Stubbed,
     Unsupported,
 }
 
@@ -200,12 +199,6 @@ pub fn project_status(config: &AppConfig) -> AudioProjectStatus {
             true,
             "backend ready for manual taps; watcher still depends on process discovery".to_string(),
         ),
-        CaptureBackendState::Stubbed => (
-            "windows-wasapi-stubbed".to_string(),
-            false,
-            "implement live session enumeration, per-process capture, and stitched chunk writer"
-                .to_string(),
-        ),
         CaptureBackendState::Unsupported => (
             "unsupported-platform".to_string(),
             false,
@@ -266,8 +259,9 @@ pub fn audio_transcript_dir(config: &AppConfig) -> PathBuf {
 pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
     match capture_backend_state() {
         CaptureBackendState::Ready => enumerate_process_sessions(),
-        CaptureBackendState::Stubbed => Err("Windows audio backend is scaffolded but session enumeration is not implemented in this build".to_string()),
-        CaptureBackendState::Unsupported => Err("Audio session enumeration is only supported on Windows".to_string()),
+        CaptureBackendState::Unsupported => {
+            Err("Audio session enumeration is only supported on Windows".to_string())
+        }
     }
 }
 
@@ -282,9 +276,6 @@ pub async fn start_tap(
     let plan = chunk_plan(config);
     match capture_backend_state() {
         CaptureBackendState::Ready => {}
-        CaptureBackendState::Stubbed => {
-            return Err("Audio tap start is not implemented yet in this build".to_string());
-        }
         CaptureBackendState::Unsupported => {
             return Err("Audio tap start is only supported on Windows".to_string());
         }
@@ -300,7 +291,7 @@ pub async fn start_tap(
     if let Some(existing) = guard
         .taps
         .values()
-        .find(|tap| tap.app_name == app_name && tap.status == TapStatus::Running)
+        .find(|tap| tap.app_name == app_name && tap_is_active(tap))
         .cloned()
     {
         return Ok(existing);
@@ -364,6 +355,10 @@ pub async fn stop_tap(registry: &SharedTapRegistry, tap_id: &str) -> Result<Acti
 
 pub async fn get_tap(registry: &SharedTapRegistry, tap_id: &str) -> Option<ActiveTap> {
     registry.lock().await.taps.get(tap_id).cloned()
+}
+
+pub fn tap_is_active(tap: &ActiveTap) -> bool {
+    tap.status != TapStatus::Stopped
 }
 
 fn spawn_tap_worker(
@@ -549,7 +544,7 @@ async fn transcribe_wav(config: &AppConfig, wav_path: &Path) -> Result<String, S
         .file_name(file_name)
         .mime_str("audio/wav")
         .map_err(|e| format!("mime: {}", e))?;
-    let form = reqwest::multipart::Form::new().part("file", part);
+    let form = reqwest::multipart::Form::new().part("audio_file", part);
     let client = reqwest::Client::new();
     let response = client
         .post(&config.whisper_url)
@@ -674,7 +669,10 @@ fn capture_chunks_windows(
 ) -> Result<(), String> {
     use wasapi::{AudioClient, Direction, SampleType, ShareMode, WaveFormat};
 
-    wasapi::initialize_mta().map_err(|e| format!("initialize_mta: {}", e))?;
+    let hr = wasapi::initialize_mta();
+    if hr.is_err() {
+        return Err(format!("initialize_mta: HRESULT {:#X}", hr.0));
+    }
 
     let desired_format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
     let blockalign = desired_format.get_blockalign() as usize;

@@ -48,8 +48,9 @@ pub fn capture_full_screen() -> Result<(Vec<u8>, Region), CaptureError> {
     let w = full.width();
     let h = full.height();
     let rgba_data = full.into_raw();
-    let rgba_img = RgbaImage::from_raw(w, h, rgba_data)
-        .ok_or(CaptureError::EncodeFailed("Failed to create RGBA image".into()))?;
+    let rgba_img = RgbaImage::from_raw(w, h, rgba_data).ok_or(CaptureError::EncodeFailed(
+        "Failed to create RGBA image".into(),
+    ))?;
     let img = DynamicImage::ImageRgba8(rgba_img);
 
     let mut buf = Vec::new();
@@ -72,8 +73,7 @@ pub fn capture_region(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>
         .into_iter()
         .find(|s| {
             let di = s.display_info;
-            x >= di.x && x < di.x + di.width as i32
-                && y >= di.y && y < di.y + di.height as i32
+            x >= di.x && x < di.x + di.width as i32 && y >= di.y && y < di.y + di.height as i32
         })
         .ok_or(CaptureError::NoScreen)?;
 
@@ -88,8 +88,9 @@ pub fn capture_region(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>
     let w = full.width();
     let h = full.height();
     let rgba_data = full.into_raw();
-    let rgba_img = RgbaImage::from_raw(w, h, rgba_data)
-        .ok_or(CaptureError::EncodeFailed("Failed to create RGBA image from buffer".into()))?;
+    let rgba_img = RgbaImage::from_raw(w, h, rgba_data).ok_or(CaptureError::EncodeFailed(
+        "Failed to create RGBA image from buffer".into(),
+    ))?;
     let img = DynamicImage::ImageRgba8(rgba_img);
 
     // Crop to the requested region
