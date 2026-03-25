@@ -34,12 +34,12 @@ pub async fn run_watcher(config: AppConfig, registry: SharedTapRegistry) {
 
         match enumerate_audio_sessions() {
             Ok(sessions) => {
-                let running_apps = {
+                let active_apps = {
                     let guard = registry.lock().await;
                     guard
                         .taps
                         .values()
-                        .filter(|tap| tap.status == TapStatus::Running)
+                        .filter(|tap| tap.status != TapStatus::Stopped)
                         .map(|tap| tap.app_name.clone())
                         .collect::<std::collections::HashSet<_>>()
                 };
@@ -62,7 +62,7 @@ pub async fn run_watcher(config: AppConfig, registry: SharedTapRegistry) {
                     .collect::<Vec<_>>();
 
                 for (app_name, pid) in &discovered_apps {
-                    if !running_apps.contains(app_name) {
+                    if !active_apps.contains(app_name) {
                         match start_tap(&registry, &config, app_name, *pid, true).await {
                             Ok(tap) => {
                                 eprintln!(
@@ -90,7 +90,7 @@ pub async fn run_watcher(config: AppConfig, registry: SharedTapRegistry) {
                         .taps
                         .values()
                         .filter(|tap| {
-                            tap.status == TapStatus::Running
+                            tap.status != TapStatus::Stopped
                                 && !discovered.contains(tap.app_name.as_str())
                         })
                         .map(|tap| tap.tap_id.clone())
