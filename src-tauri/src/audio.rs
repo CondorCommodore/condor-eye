@@ -452,11 +452,7 @@ async fn update_tap_after_chunk(
         tap.last_chunk_path = Some(wav_path.to_string_lossy().into_owned());
         tap.last_chunk_ts = Some(chunk_ts.to_string());
         tap.last_transcript_path = transcript_path.map(|path| path.to_string_lossy().into_owned());
-        tap.status = if status_detail.is_some() {
-            TapStatus::Error
-        } else {
-            TapStatus::Running
-        };
+        tap.status = TapStatus::Running;
         tap.status_detail = status_detail.map(|value| value.to_string());
     }
 }
@@ -1193,5 +1189,57 @@ mod tests {
         assert_eq!(window.nominal_start_ms, 20_000);
         assert_eq!(window.capture_start_ms, 18_500);
         assert_eq!(window.capture_end_ms, 30_000);
+    }
+
+    #[test]
+    fn transcription_failure_keeps_tap_running() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let registry = Arc::new(Mutex::new(TapRegistry::default()));
+            {
+                let mut guard = registry.lock().await;
+                guard.taps.insert(
+                    "zoom-test".to_string(),
+                    ActiveTap {
+                        tap_id: "zoom-test".to_string(),
+                        app_name: "zoom".to_string(),
+                        target_pid: 1234,
+                        include_tree: true,
+                        started_at: now_rfc3339(),
+                        chunk_seconds: 10,
+                        stitch_ms: 1500,
+                        chunks_written: 0,
+                        bytes_captured: 0,
+                        output_dir: "/tmp/condor-audio".to_string(),
+                        status: TapStatus::Running,
+                        status_detail: None,
+                        last_chunk_path: None,
+                        last_chunk_ts: None,
+                        last_transcript_path: None,
+                    },
+                );
+            }
+
+            update_tap_after_chunk(
+                &registry,
+                "zoom-test",
+                Path::new("/tmp/condor-audio/wav/zoom_20260325T010000.wav"),
+                None,
+                1024,
+                "2026-03-25T01:00:00Z",
+                Some("transcription failed: timeout"),
+            )
+            .await;
+
+            let tap = get_tap(&registry, "zoom-test").await.expect("tap");
+            assert_eq!(tap.status, TapStatus::Running);
+            assert_eq!(
+                tap.status_detail.as_deref(),
+                Some("transcription failed: timeout")
+            );
+        });
     }
 }
