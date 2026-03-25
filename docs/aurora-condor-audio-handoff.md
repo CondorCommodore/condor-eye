@@ -18,6 +18,9 @@ What is wired:
   - `condor_audio_latest`
 - Audio directories default to `%LOCALAPPDATA%\\condor_audio\\audio-taps\\`
 - The watcher task and audio API are present
+- Manual tap mode is the default operator path
+- Watcher auto-start is optional via `CONDOR_AUDIO_AUTO_WATCH=true`
+- A standalone browser UI lives under `audio-mini-ui/`
 - Manual taps can resolve a running Zoom or Discord process and start a loopback capture worker
 - Completed WAV chunks are POSTed to whisper and persisted as sibling `.txt` transcripts
 - `condor-eye` can optionally POST successful transcripts to `condor-intel`
@@ -25,7 +28,6 @@ What is wired:
 What is still incomplete / not fully verified:
 
 - True Windows audio-session enumeration; current session listing is a process-discovery fallback
-- Watcher auto-start from active audio sessions; current watcher only stops taps when the process exits
 - consent notification / tray indicator
 - Live Windows runtime verification on Aurora against real Zoom and Discord calls
 
@@ -34,7 +36,7 @@ Important consequence:
 - `GET /api/condor_audio/status` should work once the app is running
 - `GET /api/condor_audio/sessions` should return running Zoom/Discord processes
 - `POST /api/condor_audio/taps` should start a manual tap for a running process
-- the realistic v1 test path is manual tap start, not watcher auto-start
+- the realistic v1 test path is manual tap start through the mini UI or direct API calls
 
 ## Repo
 
@@ -84,6 +86,7 @@ CONDOR_AUDIO_PORT=9051
 CONDOR_AUDIO_OUTPUT_DIR=%LOCALAPPDATA%\\condor_audio\\audio-taps
 
 AUDIO_TRANSPORT=http
+CONDOR_AUDIO_AUTO_WATCH=false
 WHISPER_URL=http://localhost:8080/inference
 CONDOR_INTEL_URL=http://localhost:8791
 ```
@@ -124,7 +127,13 @@ Expected audio log lines:
 [condor_audio] HTTP API starting on 127.0.0.1:9051
 ```
 
-Expected current behavior:
+Expected current behavior with default manual mode:
+
+```text
+[condor_audio] auto-watch disabled; manual tap mode is active
+```
+
+If watcher mode is explicitly enabled:
 
 ```text
 [condor_audio] watcher starting: bind=127.0.0.1 port=9051 transport=http
@@ -141,6 +150,8 @@ curl http://localhost:9050/api/status
 ```powershell
 curl -H "Authorization: Bearer $env:CAPTURE_TOKEN" http://localhost:9051/api/condor_audio/status
 ```
+
+Or open `audio-mini-ui/index.html` and point it at `http://127.0.0.1:9051`.
 
 This should succeed now:
 

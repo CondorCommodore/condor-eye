@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path as AxumPath, Query, State},
-    http::StatusCode,
+    http::{header, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -9,6 +9,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::audio::{self, SharedTapRegistry};
 use crate::capture::{self, Region};
@@ -573,6 +574,12 @@ pub async fn start_audio_server(
         .route("/api/condor_audio/taps/{tap_id}/latest-transcript", get(handle_audio_latest_transcript))
         .route("/api/condor_audio/transcripts", get(handle_audio_transcripts))
         .route("/api/condor_audio/transcripts/{transcript_id}", get(handle_audio_transcript_get))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+        )
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);

@@ -455,10 +455,14 @@ fn main() {
                 ce_config.audio_port,
                 audio_registry.clone(),
             ));
-            tauri::async_runtime::spawn(audio_watcher::run_watcher(
-                ce_config,
-                audio_registry.clone(),
-            ));
+            if ce_config.condor_audio_auto_watch {
+                tauri::async_runtime::spawn(audio_watcher::run_watcher(
+                    ce_config,
+                    audio_registry.clone(),
+                ));
+            } else {
+                eprintln!("[condor_audio] auto-watch disabled; manual tap mode is active");
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

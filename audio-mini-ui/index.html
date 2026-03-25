@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Condor Audio Mini UI</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="kicker">Condor Audio</p>
+      <h1>Manual tap control for Zoom and Discord</h1>
+      <p class="lede">Use the localhost audio API directly without loading the full Condor Eye GUI.</p>
+    </header>
+
+    <section class="card auth">
+      <label for="api-base">Audio API</label>
+      <input id="api-base" value="http://127.0.0.1:9051" spellcheck="false">
+      <label for="token">Bearer token</label>
+      <input id="token" type="password" placeholder="CAPTURE_TOKEN" spellcheck="false">
+      <div class="row">
+        <button id="check-status">Check status</button>
+        <button id="load-sessions">Load sessions</button>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <div class="section-head">
+          <h2>Targets</h2>
+          <span id="session-count" class="pill">0 sessions</span>
+        </div>
+        <div class="row">
+          <button class="target-btn" data-app="zoom">Start Zoom tap</button>
+          <button class="target-btn" data-app="discord">Start Discord tap</button>
+        </div>
+        <pre id="sessions" class="panel empty">No sessions loaded.</pre>
+      </article>
+
+      <article class="card">
+        <div class="section-head">
+          <h2>Active taps</h2>
+          <button id="refresh-taps" class="ghost">Refresh</button>
+        </div>
+        <div id="taps" class="stack empty">No taps yet.</div>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Latest transcript</h2>
+        <span id="transcript-meta" class="pill">idle</span>
+      </div>
+      <pre id="transcript" class="panel empty">Select a tap, then fetch latest transcript.</pre>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>API output</h2>
+        <button id="clear-log" class="ghost">Clear</button>
+      </div>
+      <pre id="log" class="panel">Ready.</pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -43,6 +43,10 @@ pub enum TapStatus {
     Error,
 }
 
+pub fn tap_is_active(tap: &ActiveTap) -> bool {
+    tap.status != TapStatus::Stopped
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveTap {
     pub tap_id: String,
@@ -300,7 +304,7 @@ pub async fn start_tap(
     if let Some(existing) = guard
         .taps
         .values()
-        .find(|tap| tap.app_name == app_name && tap.status == TapStatus::Running)
+        .find(|tap| tap.app_name == app_name && tap_is_active(tap))
         .cloned()
     {
         return Ok(existing);
