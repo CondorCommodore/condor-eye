@@ -640,9 +640,19 @@ fn capture_loop(
                 *item = sample_queue.pop_front().unwrap_or_default();
             }
             let chunk_ts = OffsetDateTime::now_utc();
-            let wav_path = write_wav_chunk(&config, &tap.app_name, chunk_ts, &chunk)?;
+            let wav_bytes = build_wav_bytes(&chunk)?;
+
+            // Transcribe directly from memory — no disk write needed
             let transcript_path =
-                maybe_transcribe_chunk(&config, &tap.app_name, chunk_ts, &wav_path)?;
+                maybe_transcribe_bytes(&config, &tap.app_name, chunk_ts, &wav_bytes)?;
+
+            // Optionally archive WAV to disk (skip if CONDOR_AUDIO_ARCHIVE=false)
+            let wav_path = if config.audio_archive {
+                write_wav_bytes_to_disk(&config, &tap.app_name, chunk_ts, &wav_bytes)?
+            } else {
+                audio_wav_dir(&config).join(format!("{}.wav", timestamped_stem(&tap.app_name, chunk_ts)))
+            };
+
             update_tap_after_chunk(
                 &registry,
                 &tap.tap_id,
@@ -700,21 +710,15 @@ fn update_tap_terminal_error(registry: &SharedTapRegistry, tap_id: &str, detail:
 }
 
 #[cfg(target_os = "windows")]
-fn write_wav_chunk(
-    config: &AppConfig,
-    app_name: &str,
-    chunk_ts: OffsetDateTime,
-    raw_f32le_stereo: &[u8],
-) -> Result<PathBuf, String> {
-    let wav_path =
-        audio_wav_dir(config).join(format!("{}.wav", timestamped_stem(app_name, chunk_ts)));
+fn build_wav_bytes(raw_f32le_stereo: &[u8]) -> Result<Vec<u8>, String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: AUDIO_SAMPLE_RATE,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = hound::WavWriter::create(&wav_path, spec)
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = hound::WavWriter::new(&mut cursor, spec)
         .map_err(|e| format!("create wav writer: {}", e))?;
     for mono_sample in downmix_stereo_f32_to_mono_i16(raw_f32le_stereo) {
         writer
@@ -724,32 +728,40 @@ fn write_wav_chunk(
     writer
         .finalize()
         .map_err(|e| format!("finalize wav: {}", e))?;
+    Ok(cursor.into_inner())
+}
+
+#[cfg(target_os = "windows")]
+fn write_wav_bytes_to_disk(
+    config: &AppConfig,
+    app_name: &str,
+    chunk_ts: OffsetDateTime,
+    wav_bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let wav_path =
+        audio_wav_dir(config).join(format!("{}.wav", timestamped_stem(app_name, chunk_ts)));
+    fs::write(&wav_path, wav_bytes).map_err(|e| format!("write wav: {}", e))?;
     Ok(wav_path)
 }
 
 #[cfg(target_os = "windows")]
-fn maybe_transcribe_chunk(
+fn maybe_transcribe_bytes(
     config: &AppConfig,
     app_name: &str,
     chunk_ts: OffsetDateTime,
-    wav_path: &Path,
+    wav_bytes: &[u8],
 ) -> Result<Option<PathBuf>, String> {
     if config.whisper_url.trim().is_empty() {
         return Ok(None);
     }
 
-    let wav_bytes = fs::read(wav_path).map_err(|e| format!("read wav for transcript: {}", e))?;
-    let file_name = wav_path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or("chunk.wav")
-        .to_string();
-    let part = reqwest::blocking::multipart::Part::bytes(wav_bytes)
+    let file_name = format!("{}.wav", timestamped_stem(app_name, chunk_ts));
+    let part = reqwest::blocking::multipart::Part::bytes(wav_bytes.to_vec())
         .file_name(file_name)
         .mime_str("audio/wav")
         .map_err(|e| format!("set wav mime: {}", e))?;
     let form = reqwest::blocking::multipart::Form::new()
-        .part("file", part)
+        .part("audio_file", part)
         .text("temperature", "0");
     let response = reqwest::blocking::Client::new()
         .post(&config.whisper_url)
@@ -757,7 +769,9 @@ fn maybe_transcribe_chunk(
         .send()
         .map_err(|e| format!("POST whisper: {}", e))?;
     if !response.status().is_success() {
-        return Err(format!("whisper returned HTTP {}", response.status()));
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(format!("whisper HTTP {} {}", status, body));
     }
 
     let body = response
@@ -770,7 +784,7 @@ fn maybe_transcribe_chunk(
 
     let transcript_path =
         audio_transcript_dir(config).join(format!("{}.txt", timestamped_stem(app_name, chunk_ts)));
-    fs::write(&transcript_path, transcript).map_err(|e| format!("write transcript: {}", e))?;
+    fs::write(&transcript_path, &transcript).map_err(|e| format!("write transcript: {}", e))?;
     Ok(Some(transcript_path))
 }
 

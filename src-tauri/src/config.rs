@@ -20,6 +20,7 @@ pub struct AppConfig {
     pub audio_stitch_ms: u16,
     pub condor_intel_url: String,
     pub audio_auto_watch: bool,
+    pub audio_archive: bool,
 }
 
 impl AppConfig {
@@ -77,6 +78,10 @@ impl AppConfig {
                     )
                 })
                 .unwrap_or(false),
+            audio_archive: std::env::var("CONDOR_AUDIO_ARCHIVE")
+                .ok()
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true),  // archive by default
         }
     }
 }
