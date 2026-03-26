@@ -581,6 +581,7 @@ pub async fn start_audio_server(
         .allow_headers(Any);
 
     let app = Router::new()
+        .route("/", get(serve_audio_ui))
         .route("/api/condor_audio/status", get(handle_audio_status))
         .route("/api/condor_audio/sessions", get(handle_audio_sessions))
         .route("/api/condor_audio/taps", post(handle_audio_tap_start))
@@ -624,6 +625,13 @@ pub async fn start_audio_server(
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("[condor_audio] HTTP server error: {}", e);
     }
+}
+
+async fn serve_audio_ui() -> impl IntoResponse {
+    Response::builder()
+        .header("content-type", "text/html; charset=utf-8")
+        .body(include_str!("audio_ui.html").to_string())
+        .unwrap()
 }
 
 fn require_capture_token(

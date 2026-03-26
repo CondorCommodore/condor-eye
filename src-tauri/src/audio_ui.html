@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>condor_audio</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; background: #0d1117; color: #c9d1d9; font-size: 13px; padding: 16px; }
+h1 { font-size: 16px; color: #58a6ff; margin-bottom: 12px; }
+h2 { font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin: 16px 0 8px; }
+.status-bar { display: flex; gap: 16px; align-items: center; padding: 8px 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 12px; }
+.status-bar .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.green { background: #3fb950; }
+.dot.yellow { background: #d29922; }
+.dot.red { background: #f85149; }
+.dot.gray { background: #484f58; }
+.label { color: #8b949e; }
+.value { color: #c9d1d9; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+.card .title { color: #58a6ff; font-weight: 600; }
+.card .meta { color: #8b949e; font-size: 12px; }
+.tap { display: flex; justify-content: space-between; align-items: center; }
+.tap .left { display: flex; gap: 8px; align-items: center; }
+.btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit; }
+.btn:hover { background: #30363d; }
+.btn.danger { border-color: #f85149; color: #f85149; }
+.btn.danger:hover { background: #f8514922; }
+.transcript { max-height: 300px; overflow-y: auto; }
+.transcript .entry { padding: 6px 0; border-bottom: 1px solid #21262d; }
+.transcript .entry:last-child { border-bottom: none; }
+.transcript .ts { color: #8b949e; font-size: 11px; }
+.transcript .text { color: #c9d1d9; margin-top: 2px; white-space: pre-wrap; }
+.error { color: #f85149; }
+#auth-form { margin-bottom: 16px; display: flex; gap: 8px; }
+#auth-form input { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 13px; flex: 1; }
+.sessions .session { display: flex; gap: 8px; padding: 4px 0; }
+.sessions .pid { color: #d2a8ff; min-width: 60px; }
+.sessions .exe { color: #c9d1d9; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions .match { color: #3fb950; font-weight: 600; }
+.sessions .state { color: #8b949e; min-width: 60px; text-align: right; }
+</style>
+</head>
+<body>
+<h1>condor_audio</h1>
+
+<div id="auth-form">
+  <input type="password" id="token" placeholder="CAPTURE_TOKEN" autocomplete="off">
+  <button class="btn" onclick="saveToken()">Connect</button>
+</div>
+
+<div id="status-bar" class="status-bar">
+  <span class="dot gray"></span>
+  <span class="label">connecting...</span>
+</div>
+
+<div id="taps-section" style="display:none">
+  <h2>Active Taps</h2>
+  <div id="taps"></div>
+</div>
+
+<div id="sessions-section" style="display:none">
+  <h2>Audio Sessions</h2>
+  <div id="sessions" class="sessions"></div>
+</div>
+
+<div id="transcripts-section" style="display:none">
+  <h2>Recent Transcripts</h2>
+  <div id="transcripts" class="transcript"></div>
+</div>
+
+<script>
+const BASE = window.location.origin;
+let TOKEN = localStorage.getItem('condor_audio_token') || '';
+if (TOKEN) document.getElementById('token').value = TOKEN;
+
+function saveToken() {
+  TOKEN = document.getElementById('token').value.trim();
+  localStorage.setItem('condor_audio_token', TOKEN);
+  poll();
+}
+
+function headers() {
+  return { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+}
+
+async function api(path) {
+  const r = await fetch(BASE + path, { headers: headers() });
+  if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+  return r.json();
+}
+
+function dotClass(taps) {
+  if (!taps || taps.length === 0) return 'gray';
+  const hasError = taps.some(t => t.status === 'error' || (t.transcript_status && t.transcript_status !== 'ok'));
+  if (hasError) return 'yellow';
+  return 'green';
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
+}
+
+async function poll() {
+  try {
+    const status = await api('/api/condor_audio/status');
+    const bar = document.getElementById('status-bar');
+    const taps = status.active_taps || [];
+    const dc = dotClass(taps);
+    bar.innerHTML = `
+      <span class="dot ${dc}"></span>
+      <span class="label">Backend:</span> <span class="value">${status.project?.backend || '?'}</span>
+      <span class="label">Taps:</span> <span class="value">${taps.length}</span>
+      <span class="label">Transport:</span> <span class="value">${status.audio_transport || '?'}</span>
+      <span class="label">Whisper:</span> <span class="value">${status.whisper_url || '?'}</span>
+    `;
+
+    // Taps
+    const tapsDiv = document.getElementById('taps');
+    const tapsSection = document.getElementById('taps-section');
+    tapsSection.style.display = 'block';
+    if (taps.length === 0) {
+      tapsDiv.innerHTML = '<div class="card"><span class="meta">No active taps. Start Zoom or Discord to auto-capture.</span></div>';
+    } else {
+      tapsDiv.innerHTML = taps.map(t => `
+        <div class="card tap">
+          <div class="left">
+            <span class="dot ${t.status === 'running' || t.capture_status === 'running' ? 'green' : t.status === 'error' ? 'yellow' : 'gray'}"></span>
+            <span class="title">${t.app_name}</span>
+            <span class="meta">pid:${t.target_pid} | ${t.chunks_written} chunks | ${(t.bytes_captured/1024/1024).toFixed(1)}MB</span>
+          </div>
+          <button class="btn danger" onclick="stopTap('${t.tap_id}')">Stop</button>
+        </div>
+      `).join('');
+    }
+
+    // Sessions
+    try {
+      const sessions = await api('/api/condor_audio/sessions');
+      const sessDiv = document.getElementById('sessions');
+      const sessSection = document.getElementById('sessions-section');
+      sessSection.style.display = 'block';
+      if (!sessions || sessions.length === 0) {
+        sessDiv.innerHTML = '<div class="meta">No audio sessions detected</div>';
+      } else {
+        sessDiv.innerHTML = sessions.map(s => `
+          <div class="session">
+            <span class="pid">${s.pid}</span>
+            <span class="exe">${s.exe_path || s.display_name || '?'}</span>
+            ${s.matched_target ? '<span class="match">' + s.matched_target + '</span>' : ''}
+            <span class="state">${s.state || ''}</span>
+          </div>
+        `).join('');
+      }
+    } catch {}
+
+    // Transcripts
+    try {
+      const txs = await api('/api/condor_audio/transcripts?limit=20');
+      const txDiv = document.getElementById('transcripts');
+      const txSection = document.getElementById('transcripts-section');
+      txSection.style.display = 'block';
+      if (!txs || txs.length === 0) {
+        txDiv.innerHTML = '<div class="meta">No transcripts yet</div>';
+      } else {
+        txDiv.innerHTML = txs.slice(0, 20).map(t => `
+          <div class="entry">
+            <div class="ts">${t.app} | ${formatTime(t.created_at)} | ${t.id}</div>
+          </div>
+        `).join('');
+      }
+    } catch {}
+  } catch (e) {
+    const bar = document.getElementById('status-bar');
+    bar.innerHTML = '<span class="dot red"></span><span class="error">' + e.message + '</span>';
+  }
+}
+
+async function stopTap(tapId) {
+  try {
+    await fetch(BASE + '/api/condor_audio/taps/' + encodeURIComponent(tapId), { method: 'DELETE', headers: headers() });
+    poll();
+  } catch (e) { alert(e.message); }
+}
+
+if (TOKEN) poll();
+setInterval(() => { if (TOKEN) poll(); }, 5000);
+</script>
+</body>
+</html>
