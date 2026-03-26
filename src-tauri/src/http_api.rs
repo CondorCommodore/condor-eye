@@ -1,4 +1,5 @@
 use axum::{
+    body::Body,
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -9,7 +10,6 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tower_http::cors::{Any, CorsLayer};
 
 use crate::audio::{self, SharedTapRegistry};
 use crate::capture::{self, Region};
@@ -485,6 +485,43 @@ async fn handle_screenshot(
     })))
 }
 
+// ── Grid config persistence — survives WebView2 cache clears ──
+
+pub(crate) fn grid_config_path() -> std::path::PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        std::path::Path::new(&appdata)
+            .join("Condor Eye")
+            .join("grid.json")
+    } else {
+        std::path::PathBuf::from("grid.json")
+    }
+}
+
+async fn handle_grid_save(
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let path = grid_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&body).unwrap_or_default(),
+    )
+    .map_err(|e| api_error(format!("Save grid: {}", e)))?;
+    eprintln!("[CE] grid config saved to {}", path.display());
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+async fn handle_grid_load() -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let path = grid_config_path();
+    let data =
+        std::fs::read_to_string(&path).map_err(|e| api_error(format!("Load grid: {}", e)))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| api_error(format!("Parse grid: {}", e)))?;
+    Ok(Json(json))
+}
+
 // ── Vision proxy — forwards to local vision server so JS stays same-origin ──
 
 async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)>
@@ -531,6 +568,8 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
         .route("/api/windows", get(handle_windows))
         .route("/api/vision", get(handle_vision_proxy))
         .route("/api/screenshot", post(handle_screenshot))
+        .route("/api/grid", get(handle_grid_load))
+        .route("/api/grid", post(handle_grid_save))
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);
@@ -575,11 +614,6 @@ pub async fn start_audio_server(
         eprintln!("[condor_audio] warning: {}", err);
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let app = Router::new()
         .route("/", get(serve_audio_ui))
         .route("/api/condor_audio/status", get(handle_audio_status))
@@ -605,7 +639,6 @@ pub async fn start_audio_server(
             "/api/condor_audio/transcripts/{transcript_id}",
             get(handle_audio_transcript_get),
         )
-        .layer(cors)
         .with_state(state);
 
     let addr = format!("{}:{}", bind_addr, port);

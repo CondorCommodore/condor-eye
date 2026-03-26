@@ -8,6 +8,33 @@ const appWindow = getCurrentWindow();
 
 // Pen state — declared early because the capture-phase resize handler checks it.
 let penActive = false;
+// Grid editor state — declared early for redrawStrokes reference.
+let gridActive = false;
+
+// Click-through: transparent areas pass clicks to windows behind.
+// Toggle with Ctrl+Shift+T or toolbar button. When ON, you can't click CE UI.
+// Use the global shortcut Ctrl+Shift+C to capture, or Ctrl+Shift+T to toggle back.
+let clickThrough = true; // start click-through so Bookmap is usable
+async function setClickThrough(enabled) {
+  clickThrough = enabled;
+  try { await invoke('set_click_through', { enabled }); } catch {}
+}
+// Enable click-through on startup after window initializes
+setTimeout(() => setClickThrough(true), 500);
+
+// Ctrl+Shift+T toggles click-through
+appWindow.listen('toggle-click-through', () => {
+  setClickThrough(!clickThrough);
+});
+
+// Ctrl+Shift+M toggles minimal mode (just the blue border)
+let minimalMode = false;
+appWindow.listen('toggle-minimal', () => {
+  minimalMode = !minimalMode;
+  document.body.classList.toggle('minimal', minimalMode);
+  console.log(`[CE] minimal mode: ${minimalMode ? 'ON' : 'OFF'}`);
+});
+let _lastMouseX = 0, _lastMouseY = 0;
 
 // --- Edge/corner resize for frameless transparent window ---
 // Tauri 2's startResizeDragging rejects compound corner directions on WebView2,
@@ -119,6 +146,8 @@ document.addEventListener('pointerup', (e) => {
 
 document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
+  // Don't intercept clicks on interactive UI elements (results panel, toolbar buttons)
+  if (e.target.closest('#results, #toolbar, #drag-handle')) return;
   const direction = getResizeDirection(e);
   // When pen is active, only intercept if we're on a resize corner/edge —
   // otherwise let the event pass through to the canvas for drawing.
@@ -324,6 +353,11 @@ function redrawStrokes() {
   }
   // Vision overlays drawn on top of pen strokes
   if (typeof renderVisionOverlays === 'function') renderVisionOverlays();
+  // Grid buffer lines on top of everything when grid editor is active
+  if (gridActive && typeof renderGridDividers === 'function') {
+    const hover = gridDrag ? gridDrag : hitTestBuffer(_lastMouseX, _lastMouseY);
+    renderGridDividers(hover);
+  }
 }
 
 function renderStroke(outline, color) {
@@ -351,6 +385,7 @@ penToggle.addEventListener('click', () => {
   const blockEvents = penActive ? 'none' : '';
   document.getElementById('results').style.pointerEvents = blockEvents;
   focusBox.style.pointerEvents = blockEvents;
+
 });
 
 // Cycle pen color
@@ -619,17 +654,23 @@ function startDrag(e) {
 dragHandle.addEventListener('mousedown', startDrag);
 toolbar.addEventListener('mousedown', startDrag);
 
-// --- Vision overlay: polls bookmap_vision server and draws boxes ---
-let visionOverlays = [];  // [{x, y, w, h, color, label}]
+// --- Vision overlay: polls bookmap_vision server and draws wall indicators ---
+let visionOverlays = [];  // [{x, y, w, h, color, label, side, intensity}]
 let visionActive = false;
 let visionTimer = null;
-// Vision data fetched via Tauri IPC (bypasses CSP entirely)
+// Frame persistence: track walls across frames, only render stable ones
+let wallHistory = new Map(); // key -> { count, lastSeen, data }
+const WALL_PERSIST_FRAMES = 3; // must appear in 3+ frames to render
+const WALL_EXPIRE_FRAMES = 5; // disappear after 5 frames without seeing
+let frameCounter = 0;
 
 function renderVisionOverlays() {
-  // Called after redrawStrokes — draws vision boxes on top of pen strokes
+  // Called after redrawStrokes — draws wall indicators on top of pen strokes
   const cw = drawCanvas.width;
   const ch = drawCanvas.height;
-  if (!cw || !ch || !visionOverlays.length) return;
+  if (!cw || !ch) return;
+
+  if (!visionOverlays.length) return;
 
   drawCtx.save();
   for (const ov of visionOverlays) {
@@ -637,25 +678,41 @@ function renderVisionOverlays() {
     const y = ov.y * ch;
     const w = ov.w * cw;
     const h = ov.h * ch;
+    const centerY = y + h / 2;
+    const alpha = Math.min(1, (ov.age || 1) / 3); // fade in over 3 frames
 
-    // Box outline
+    // Thin horizontal line at wall center (not a box)
+    const intensity = ov.intensity || 0.5;
+    const lineWidth = 1 + intensity * 3; // 1-4px based on wall strength
     drawCtx.strokeStyle = ov.color || '#00e5ff';
-    drawCtx.lineWidth = 2;
-    drawCtx.setLineDash([6, 3]);
-    drawCtx.strokeRect(x, y, w, h);
-    drawCtx.setLineDash([]);
+    drawCtx.globalAlpha = 0.4 + intensity * 0.5; // stronger walls more opaque
+    drawCtx.lineWidth = lineWidth;
+    drawCtx.beginPath();
+    drawCtx.moveTo(x, centerY);
+    drawCtx.lineTo(x + w, centerY);
+    drawCtx.stroke();
 
-    // Label background
+    // Small intensity tick on the edge (bid=left, ask=right)
+    const tickX = ov.side === 'ask' ? x + w : x;
+    const tickW = 4 + intensity * 12; // 4-16px tick proportional to strength
+    const tickDir = ov.side === 'ask' ? -1 : 1;
+    drawCtx.fillStyle = ov.color || '#00e5ff';
+    drawCtx.globalAlpha = 0.6 + intensity * 0.4;
+    drawCtx.fillRect(tickX, centerY - lineWidth, tickW * tickDir, lineWidth * 2);
+
+    // Compact label
     if (ov.label) {
-      drawCtx.font = 'bold 12px monospace';
+      drawCtx.globalAlpha = 0.8;
+      drawCtx.font = 'bold 10px monospace';
+      const lx = ov.side === 'ask' ? x + w - 40 : x + 4;
+      drawCtx.fillStyle = 'rgba(0,0,0,0.6)';
       const tm = drawCtx.measureText(ov.label);
-      const lx = x + w + 4;
-      const ly = y + h / 2;
-      drawCtx.fillStyle = 'rgba(0,0,0,0.7)';
-      drawCtx.fillRect(lx - 2, ly - 12, tm.width + 6, 16);
+      drawCtx.fillRect(lx - 1, centerY - 10, tm.width + 4, 12);
       drawCtx.fillStyle = ov.color || '#00e5ff';
-      drawCtx.fillText(ov.label, lx, ly);
+      drawCtx.fillText(ov.label, lx + 1, centerY - 1);
     }
+
+    drawCtx.globalAlpha = 1;
   }
 
   // Bias bar at top of frame
@@ -687,6 +744,23 @@ function renderVisionOverlays() {
 // Vision overlays are now rendered as part of redrawStrokes() directly.
 // No patching needed — fetchVisionData() calls redrawStrokes() after updating overlay data.
 
+// Check if a fractional coordinate falls inside any buffer zone
+function isInBuffer(xFrac, yFrac) {
+  for (const buf of gridBuffers.v) {
+    if (xFrac >= buf[0] && xFrac <= buf[1]) return true;
+  }
+  for (const buf of gridBuffers.h) {
+    if (yFrac >= buf[0] && yFrac <= buf[1]) return true;
+  }
+  return false;
+}
+
+// Check if an overlay's center falls inside any buffer zone
+function overlapsBuffer(x, y, w, h) {
+  const cx = x + w / 2, cy = y + h / 2;
+  return isInBuffer(cx, cy);
+}
+
 async function fetchVisionData() {
   try {
     const data = await invoke('fetch_vision');
@@ -697,46 +771,74 @@ async function fetchVisionData() {
     const frameH = data.frame_size?.[1] || 1;
 
     // Per-panel wall rendering — positions walls within each detected panel
-    for (const panel of (data.panels || [])) {
+    const panels = data.panels || [];
+
+    // Fallback: if only 1 panel (full frame), use global walls directly
+    if (panels.length <= 1 && (data.bid_walls?.length || data.ask_walls?.length)) {
+      for (const wall of (data.bid_walls || []).slice(0, 3)) {
+        const rowH = (wall.rows || 10) / frameH;
+        overlays.push({
+          x: 0, y: wall.y_pct - rowH / 2, w: 0.45, h: rowH,
+          color: '#00ccff', side: 'bid', intensity: wall.intensity,
+          label: `${(wall.intensity * 100).toFixed(0)}`,
+        });
+      }
+      for (const wall of (data.ask_walls || []).slice(0, 3)) {
+        const rowH = (wall.rows || 10) / frameH;
+        overlays.push({
+          x: 0.55, y: wall.y_pct - rowH / 2, w: 0.45, h: rowH,
+          color: '#ff4400', side: 'ask', intensity: wall.intensity,
+          label: `${(wall.intensity * 100).toFixed(0)}`,
+        });
+      }
+    }
+
+    for (const panel of panels) {
       const p = panel.panel;
       if (!p || p.h < 200) continue; // skip header/status panels
 
       // Panel bounds as fractions of the full frame
       const px = p.x_pct, py = p.y_pct, pw = p.w_pct, ph = p.h_pct;
 
-      // Bid walls — cyan boxes within this panel
-      for (const wall of (panel.bid_walls || [])) {
+      // Bid walls — top 3 strongest, thin cyan lines
+      const bidWalls = (panel.bid_walls || []).slice(0, 3);
+      for (const wall of bidWalls) {
         const rowH = (wall.rows || 10) / p.h;
+        const oy = py + (wall.y_pct - rowH / 2) * ph;
+        const oh = rowH * ph;
+        if (overlapsBuffer(px, oy, pw * 0.45, oh)) continue;
         overlays.push({
-          x: px,
-          y: py + (wall.y_pct - rowH / 2) * ph,
-          w: wall.width_pct * pw,
-          h: rowH * ph,
-          color: '#00ccff',
-          label: `B${(wall.intensity * 100).toFixed(0)}`,
+          x: px, y: oy, w: pw * 0.45, h: oh,
+          color: '#00ccff', side: 'bid',
+          intensity: wall.intensity,
+          label: `${(wall.intensity * 100).toFixed(0)}`,
         });
       }
 
-      // Ask walls — red-orange boxes within this panel
-      for (const wall of (panel.ask_walls || [])) {
+      // Ask walls — top 3 strongest, thin red lines
+      const askWalls = (panel.ask_walls || []).slice(0, 3);
+      for (const wall of askWalls) {
         const rowH = (wall.rows || 10) / p.h;
+        const oy = py + (wall.y_pct - rowH / 2) * ph;
+        const oh = rowH * ph;
+        if (overlapsBuffer(px + pw * 0.55, oy, pw * 0.45, oh)) continue;
         overlays.push({
-          x: px + pw - wall.width_pct * pw,
-          y: py + (wall.y_pct - rowH / 2) * ph,
-          w: wall.width_pct * pw,
-          h: rowH * ph,
-          color: '#ff4400',
-          label: `A${(wall.intensity * 100).toFixed(0)}`,
+          x: px + pw * 0.55, y: oy, w: pw * 0.45, h: oh,
+          color: '#ff4400', side: 'ask',
+          intensity: wall.intensity,
+          label: `${(wall.intensity * 100).toFixed(0)}`,
         });
       }
     }
 
+    // TODO: frame persistence disabled for debugging — render all walls directly
     overlays._bias = {
       bid: data.bid_intensity || 0,
       ask: data.ask_intensity || 0,
     };
 
     visionOverlays = overlays;
+    console.log(`[vision] ${overlays.length} overlays from ${(data.panels || []).length} panels`);
     redrawStrokes();
   } catch {
     // Vision server not available — clear overlays silently
@@ -759,7 +861,7 @@ function stopVision() {
   visionActive = false;
   if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
   visionOverlays = [];
-  _patchedRedraw();
+  redrawStrokes();
   console.log('[vision] overlay polling stopped');
 }
 
@@ -781,3 +883,240 @@ function stopVision() {
   }
   console.log('[vision] vision server not available after 5 attempts, overlay disabled');
 })();
+
+// --- Panel grid editor: draggable buffer zone lines ---
+// Each buffer is a PAIR of lines defining a dead zone where no overlays draw.
+// Yellow lines for visibility against dark heatmap backgrounds.
+const gridToggle = document.getElementById('grid-toggle');
+const GRID_HIT_ZONE = 10; // px from line to register a grab
+const GRID_LINE_COLOR = 'rgba(255, 200, 0, 0.7)';
+const GRID_LINE_HOVER = 'rgba(255, 255, 0, 1.0)';
+const GRID_FILL_COLOR = 'rgba(255, 200, 0, 0.08)'; // subtle fill between buffer lines
+
+// Buffer state: each buffer is [lineA, lineB] as fractions (0-1)
+// v: 1 vertical buffer (left line, right line)
+// h: 3 horizontal buffers (top line, bottom line) × 3
+let gridBuffers = loadGridBuffers();
+let gridDrag = null; // { bufferIdx, lineIdx (0 or 1), orientation }
+
+function defaultBuffers() {
+  return {
+    v: [[0.43, 0.50]],                                          // 1 vertical center buffer
+    h: [[0.00, 0.03], [0.18, 0.20], [0.43, 0.45], [0.65, 0.67], [0.95, 1.00]], // top + 3 row dividers + bottom
+  };
+}
+
+async function loadGridConfigFromFile() {
+  try {
+    const config = await invoke('load_grid_config');
+    // Restore window position/size IMMEDIATELY so it doesn't flash in wrong spot
+    if (config.window) {
+      const w = config.window;
+      console.log(`[grid] restoring window: (${w.x},${w.y}) ${w.w}x${w.h}`);
+      await appWindow.setSize(new PhysicalSize(w.w, w.h));
+      await appWindow.setPosition(new PhysicalPosition(w.x, w.y));
+    }
+    // Restore buffers
+    if (config.buffers && config.buffers.v && config.buffers.h) {
+      console.log('[grid] restored buffer config from file');
+      return config.buffers;
+    }
+  } catch (err) {
+    console.log('[grid] no saved config:', err);
+  }
+  return null;
+}
+
+function loadGridBuffers() {
+  try {
+    const saved = localStorage.getItem('condor-eye-grid-v2');
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  // Try loading from file asynchronously after init
+  loadGridConfigFromFile().then(data => {
+    if (data) {
+      gridBuffers = data;
+      localStorage.setItem('condor-eye-grid-v2', JSON.stringify(data));
+      redrawStrokes();
+    }
+  });
+  return defaultBuffers();
+}
+
+async function saveGridBuffers() {
+  localStorage.setItem('condor-eye-grid-v2', JSON.stringify(gridBuffers));
+  // Persist buffers + window geometry via IPC (bypasses CSP)
+  try {
+    const pos = await appWindow.outerPosition();
+    const size = await appWindow.outerSize();
+    const config = {
+      buffers: gridBuffers,
+      window: { x: pos.x, y: pos.y, w: size.width, h: size.height },
+    };
+    await invoke('save_grid_config', { config });
+    console.log('[grid] config saved to file');
+  } catch (err) {
+    console.error('[grid] save error:', err);
+  }
+}
+
+function bufferToPixel(frac, orientation) {
+  const cw = drawCanvas.width, ch = drawCanvas.height;
+  return orientation === 'v' ? frac * cw : frac * ch;
+}
+
+function pixelToBuffer(px, orientation) {
+  const cw = drawCanvas.width, ch = drawCanvas.height;
+  return orientation === 'v' ? px / cw : px / ch;
+}
+
+// Hit-test: which buffer line is under the pointer?
+function hitTestBuffer(x, y) {
+  for (let bi = 0; bi < gridBuffers.v.length; bi++) {
+    for (let li = 0; li < 2; li++) {
+      const px = bufferToPixel(gridBuffers.v[bi][li], 'v');
+      if (Math.abs(x - px) < GRID_HIT_ZONE) return { bufferIdx: bi, lineIdx: li, orientation: 'v' };
+    }
+  }
+  for (let bi = 0; bi < gridBuffers.h.length; bi++) {
+    for (let li = 0; li < 2; li++) {
+      const px = bufferToPixel(gridBuffers.h[bi][li], 'h');
+      if (Math.abs(y - px) < GRID_HIT_ZONE) return { bufferIdx: bi, lineIdx: li, orientation: 'h' };
+    }
+  }
+  return null;
+}
+
+// Draw buffer zone lines and fills
+function renderGridDividers(hoverHit) {
+  const cw = drawCanvas.width, ch = drawCanvas.height;
+  if (!cw || !ch) return;
+
+  drawCtx.save();
+
+  // Vertical buffers
+  for (let bi = 0; bi < gridBuffers.v.length; bi++) {
+    const px0 = bufferToPixel(gridBuffers.v[bi][0], 'v');
+    const px1 = bufferToPixel(gridBuffers.v[bi][1], 'v');
+    // Fill between lines
+    drawCtx.fillStyle = GRID_FILL_COLOR;
+    drawCtx.fillRect(px0, 0, px1 - px0, ch);
+    // Draw both lines
+    for (let li = 0; li < 2; li++) {
+      const px = li === 0 ? px0 : px1;
+      const isHover = hoverHit && hoverHit.orientation === 'v' && hoverHit.bufferIdx === bi && hoverHit.lineIdx === li;
+      drawCtx.strokeStyle = isHover ? GRID_LINE_HOVER : GRID_LINE_COLOR;
+      drawCtx.lineWidth = isHover ? 3 : 1.5;
+      drawCtx.setLineDash([8, 4]);
+      drawCtx.beginPath();
+      drawCtx.moveTo(px, 0);
+      drawCtx.lineTo(px, ch);
+      drawCtx.stroke();
+    }
+  }
+
+  // Horizontal buffers
+  for (let bi = 0; bi < gridBuffers.h.length; bi++) {
+    const px0 = bufferToPixel(gridBuffers.h[bi][0], 'h');
+    const px1 = bufferToPixel(gridBuffers.h[bi][1], 'h');
+    // Fill between lines
+    drawCtx.fillStyle = GRID_FILL_COLOR;
+    drawCtx.fillRect(0, px0, cw, px1 - px0);
+    // Draw both lines
+    for (let li = 0; li < 2; li++) {
+      const px = li === 0 ? px0 : px1;
+      const isHover = hoverHit && hoverHit.orientation === 'h' && hoverHit.bufferIdx === bi && hoverHit.lineIdx === li;
+      drawCtx.strokeStyle = isHover ? GRID_LINE_HOVER : GRID_LINE_COLOR;
+      drawCtx.lineWidth = isHover ? 3 : 1.5;
+      drawCtx.setLineDash([8, 4]);
+      drawCtx.beginPath();
+      drawCtx.moveTo(0, px);
+      drawCtx.lineTo(cw, px);
+      drawCtx.stroke();
+    }
+  }
+
+  drawCtx.setLineDash([]);
+  drawCtx.restore();
+}
+
+// Toggle grid editor
+gridToggle.addEventListener('click', () => {
+  gridActive = !gridActive;
+  gridToggle.classList.toggle('active', gridActive);
+  drawCanvas.classList.toggle('active', gridActive);
+  drawCanvas.style.zIndex = gridActive ? '12' : '';
+  // Disable pointer events on overlapping elements when grid is active
+  const blockEvents = gridActive ? 'none' : '';
+  document.getElementById('results').style.pointerEvents = blockEvents;
+  focusBox.style.pointerEvents = blockEvents;
+  // Disable pen if grid is active
+  if (gridActive && penActive) {
+    penActive = false;
+    penToggle.classList.remove('active');
+  }
+
+  redrawStrokes();
+});
+
+// Stop propagation on grid button clicks
+for (const el of [gridToggle]) {
+  el.addEventListener('mousedown', (e) => { e.stopPropagation(); e.stopImmediatePropagation(); });
+  el.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.stopImmediatePropagation(); });
+}
+
+// Grid pointer events — intercept canvas events when grid is active
+drawCanvas.addEventListener('pointerdown', (e) => {
+  if (!gridActive || e.button !== 0) return;
+  const hit = hitTestBuffer(e.offsetX, e.offsetY);
+  if (!hit) return;
+  e.preventDefault();
+  e.stopPropagation();
+  drawCanvas.setPointerCapture(e.pointerId);
+  gridDrag = hit;
+}, true); // capture phase to beat pen handler
+
+drawCanvas.addEventListener('pointermove', (e) => {
+  if (!gridActive) return;
+
+  if (gridDrag) {
+    const frac = pixelToBuffer(
+      gridDrag.orientation === 'v' ? e.offsetX : e.offsetY,
+      gridDrag.orientation
+    );
+    const clamped = Math.max(0.02, Math.min(0.98, frac));
+    gridBuffers[gridDrag.orientation][gridDrag.bufferIdx][gridDrag.lineIdx] = clamped;
+    redrawStrokes();
+    return;
+  }
+
+  // Hover: update cursor
+  const hit = hitTestBuffer(e.offsetX, e.offsetY);
+  if (hit) {
+    drawCanvas.style.cursor = hit.orientation === 'v' ? 'col-resize' : 'row-resize';
+  } else {
+    drawCanvas.style.cursor = 'default';
+  }
+  redrawStrokes();
+});
+
+drawCanvas.addEventListener('pointerup', (e) => {
+  if (!gridDrag) return;
+  drawCanvas.releasePointerCapture(e.pointerId);
+  // Ensure line A < line B within each buffer
+  for (const buf of gridBuffers.h) { if (buf[0] > buf[1]) buf.reverse(); }
+  for (const buf of gridBuffers.v) { if (buf[0] > buf[1]) buf.reverse(); }
+  // Sort buffers by position
+  gridBuffers.h.sort((a, b) => a[0] - b[0]);
+  gridBuffers.v.sort((a, b) => a[0] - b[0]);
+  saveGridBuffers();
+  gridDrag = null;
+  redrawStrokes();
+  console.log('[grid] buffers saved:', JSON.stringify(gridBuffers));
+});
+
+// Track mouse for grid hover highlights
+drawCanvas.addEventListener('mousemove', (e) => {
+  _lastMouseX = e.offsetX;
+  _lastMouseY = e.offsetY;
+});

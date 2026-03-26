@@ -17,6 +17,21 @@ html[data-resize-cursor="nesw-resize"] * { cursor: nesw-resize !important; }
 html[data-resize-cursor="ns-resize"] * { cursor: ns-resize !important; }
 html[data-resize-cursor="ew-resize"] * { cursor: ew-resize !important; }
 
+/* ── Minimal mode: just the border, nothing else ── */
+body.minimal #drag-handle,
+body.minimal #toolbar,
+body.minimal #results,
+body.minimal #focus-box,
+body.minimal #draw-canvas {
+  display: none !important;
+}
+
+body.minimal #frame {
+  top: 0;
+  bottom: 0;
+  border: 2px solid rgba(0, 180, 255, 0.5);
+}
+
 /* Header / drag bar */
 #drag-handle {
   position: fixed;

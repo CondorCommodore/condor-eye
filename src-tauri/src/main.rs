@@ -377,6 +377,63 @@ async fn share_coord(
     Ok(format!("Sent to {}", agent_id))
 }
 
+/// Set click-through on the window (transparent areas pass clicks to windows behind).
+#[tauri::command]
+async fn set_click_through(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    use std::os::raw::c_long;
+    #[allow(non_snake_case)]
+    mod win32 {
+        extern "system" {
+            pub fn GetWindowLongW(hWnd: isize, nIndex: i32) -> i32;
+            pub fn SetWindowLongW(hWnd: isize, nIndex: i32, dwNewLong: i32) -> i32;
+        }
+        pub const GWL_EXSTYLE: i32 = -20;
+        pub const WS_EX_TRANSPARENT: i32 = 0x00000020;
+        pub const WS_EX_LAYERED: i32 = 0x00080000;
+    }
+
+    let hwnd = window.hwnd().map_err(|e| format!("No HWND: {}", e))?;
+    let hwnd_val = hwnd.0 as isize;
+
+    unsafe {
+        let style = win32::GetWindowLongW(hwnd_val, win32::GWL_EXSTYLE);
+        let new_style = if enabled {
+            style | win32::WS_EX_TRANSPARENT | win32::WS_EX_LAYERED
+        } else {
+            style & !(win32::WS_EX_TRANSPARENT)
+        };
+        win32::SetWindowLongW(hwnd_val, win32::GWL_EXSTYLE, new_style);
+    }
+
+    eprintln!("[CE] click-through: {}", if enabled { "ON" } else { "OFF" });
+    Ok(())
+}
+
+/// Load grid config from %APPDATA%/Condor Eye/grid.json via IPC (bypasses CSP).
+#[tauri::command]
+async fn load_grid_config() -> Result<serde_json::Value, String> {
+    let path = crate::http_api::grid_config_path();
+    let data =
+        std::fs::read_to_string(&path).map_err(|e| format!("No saved grid config: {}", e))?;
+    serde_json::from_str(&data).map_err(|e| format!("Parse grid config: {}", e))
+}
+
+/// Save grid config to %APPDATA%/Condor Eye/grid.json via IPC (bypasses CSP).
+#[tauri::command]
+async fn save_grid_config(config: serde_json::Value) -> Result<(), String> {
+    let path = crate::http_api::grid_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    )
+    .map_err(|e| format!("Save grid config: {}", e))?;
+    eprintln!("[CE] grid config saved to {}", path.display());
+    Ok(())
+}
+
 /// Fetch vision overlay data from the local vision server via IPC (bypasses CSP).
 #[tauri::command]
 async fn fetch_vision(
@@ -473,21 +530,53 @@ fn main() {
             share_discord,
             share_coord,
             fetch_vision,
+            load_grid_config,
+            save_grid_config,
+            set_click_through,
         ])
         .setup(move |app| {
             // Register Ctrl+Shift+C global shortcut
-            let shortcut = Shortcut::new(
-                Some(Modifiers::CONTROL | Modifiers::SHIFT),
-                Code::KeyC,
-            );
+            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyC);
             let handle = app.handle().clone();
-            if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, _event| {
-                // Emit event to frontend to trigger capture
-                if let Some(window) = handle.get_webview_window("main") {
-                    let _ = window.emit("trigger-capture", ());
-                }
-            }) {
-                eprintln!("Warning: failed to register Ctrl+Shift+C shortcut: {}. Use the UI button instead.", e);
+            if let Err(e) =
+                app.global_shortcut()
+                    .on_shortcut(shortcut, move |_app, _shortcut, _event| {
+                        if let Some(window) = handle.get_webview_window("main") {
+                            let _ = window.emit("trigger-capture", ());
+                        }
+                    })
+            {
+                eprintln!("Warning: failed to register Ctrl+Shift+C shortcut: {}", e);
+            }
+
+            // Register Ctrl+Shift+M to toggle minimal mode
+            let min_shortcut =
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyM);
+            let min_handle = app.handle().clone();
+            if let Err(e) =
+                app.global_shortcut()
+                    .on_shortcut(min_shortcut, move |_app, _shortcut, _event| {
+                        if let Some(window) = min_handle.get_webview_window("main") {
+                            let _ = window.emit("toggle-minimal", ());
+                        }
+                    })
+            {
+                eprintln!("Warning: failed to register Ctrl+Shift+M shortcut: {}", e);
+            }
+
+            // Register Ctrl+Shift+T to toggle click-through
+            let ct_shortcut =
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
+            let ct_handle = app.handle().clone();
+            if let Err(e) =
+                app.global_shortcut()
+                    .on_shortcut(ct_shortcut, move |_app, _shortcut, _event| {
+                        if let Some(window) = ct_handle.get_webview_window("main") {
+                            let _ = window.emit("toggle-click-through", ());
+                        }
+                    })
+            {
+                eprintln!("Warning: failed to register Ctrl+Shift+T shortcut: {}", e);
             }
             // Start Condor Eye HTTP API server
             let ce_config = app.state::<AppState>().config.lock().unwrap().clone();
@@ -502,16 +591,10 @@ fn main() {
                 ce_config.audio_port,
                 audio_registry.clone(),
             ));
-            if ce_config.audio_auto_watch {
-                tauri::async_runtime::spawn(audio_watcher::run_watcher(
-                    ce_config,
-                    audio_registry.clone(),
-                ));
-            } else {
-                eprintln!(
-                    "[condor_audio] watcher disabled (set CONDOR_AUDIO_AUTO_WATCH=1 to enable auto-discovery)"
-                );
-            }
+            tauri::async_runtime::spawn(audio_watcher::run_watcher(
+                ce_config,
+                audio_registry.clone(),
+            ));
             Ok(())
         })
         .run(tauri::generate_context!())

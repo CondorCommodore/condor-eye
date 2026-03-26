@@ -1,14 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[cfg(target_os = "windows")]
-use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-#[cfg(target_os = "windows")]
-use std::time::Duration;
+use std::thread::JoinHandle;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
@@ -16,6 +12,10 @@ use tokio::sync::Mutex;
 use crate::config::AppConfig;
 
 pub type SharedTapRegistry = Arc<Mutex<TapRegistry>>;
+
+const AUDIO_CHUNK_SECONDS: usize = 10;
+const AUDIO_SAMPLE_RATE: u32 = 48_000;
+const AUDIO_CHANNELS: u16 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AudioTargetApp {
@@ -50,8 +50,6 @@ pub struct ActiveTap {
     pub target_pid: u32,
     pub include_tree: bool,
     pub started_at: String,
-    pub chunk_seconds: u16,
-    pub stitch_ms: u16,
     pub chunks_written: u64,
     pub bytes_captured: u64,
     pub output_dir: String,
@@ -62,16 +60,17 @@ pub struct ActiveTap {
     pub last_transcript_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TapRegistry {
     pub taps: HashMap<String, ActiveTap>,
     #[serde(skip)]
-    pub controls: HashMap<String, TapRuntime>,
+    runtime: HashMap<String, TapRuntime>,
 }
 
-#[derive(Debug, Clone)]
-pub struct TapRuntime {
-    pub stop_flag: Arc<AtomicBool>,
+#[derive(Debug)]
+struct TapRuntime {
+    stop_flag: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,8 +87,6 @@ pub struct AudioProjectStatus {
     pub supported: bool,
     pub backend: String,
     pub backend_ready: bool,
-    pub chunk_seconds: u16,
-    pub stitch_ms: u16,
     pub target_apps: Vec<AudioTargetApp>,
     pub next_step: String,
 }
@@ -104,22 +101,6 @@ pub struct AudioStatusSnapshot {
     pub audio_transport: String,
     pub audio_output_dir: String,
     pub whisper_url: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AudioChunkPlan {
-    pub chunk_seconds: u16,
-    pub stitch_ms: u16,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AudioChunkWindow {
-    pub chunk_index: u64,
-    pub nominal_start_ms: u64,
-    pub nominal_end_ms: u64,
-    pub capture_start_ms: u64,
-    pub capture_end_ms: u64,
-    pub stitch_ms: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,39 +146,12 @@ pub fn capture_backend_state() -> CaptureBackendState {
     }
 }
 
-pub fn chunk_plan(config: &AppConfig) -> AudioChunkPlan {
-    let chunk_seconds = config.audio_chunk_seconds.max(1);
-    let max_stitch_ms = u32::from(chunk_seconds) * 1000;
-    let stitch_ms = u16::try_from(u32::from(config.audio_stitch_ms).min(max_stitch_ms))
-        .unwrap_or(chunk_seconds * 1000);
-    AudioChunkPlan {
-        chunk_seconds,
-        stitch_ms,
-    }
-}
-
-pub fn chunk_window(plan: AudioChunkPlan, chunk_index: u64) -> AudioChunkWindow {
-    let chunk_ms = u64::from(plan.chunk_seconds) * 1000;
-    let nominal_start_ms = chunk_index.saturating_mul(chunk_ms);
-    let nominal_end_ms = nominal_start_ms.saturating_add(chunk_ms);
-    let capture_start_ms = nominal_start_ms.saturating_sub(u64::from(plan.stitch_ms));
-    AudioChunkWindow {
-        chunk_index,
-        nominal_start_ms,
-        nominal_end_ms,
-        capture_start_ms,
-        capture_end_ms: nominal_end_ms,
-        stitch_ms: plan.stitch_ms,
-    }
-}
-
-pub fn project_status(config: &AppConfig) -> AudioProjectStatus {
-    let plan = chunk_plan(config);
+pub fn project_status() -> AudioProjectStatus {
     let (backend, backend_ready, next_step) = match capture_backend_state() {
         CaptureBackendState::Ready => (
             "windows-wasapi".to_string(),
             true,
-            "backend ready for manual taps; watcher still depends on process discovery".to_string(),
+            "ready to enumerate sessions and capture loopback audio".to_string(),
         ),
         CaptureBackendState::Unsupported => (
             "unsupported-platform".to_string(),
@@ -210,8 +164,6 @@ pub fn project_status(config: &AppConfig) -> AudioProjectStatus {
         supported: cfg!(target_os = "windows"),
         backend,
         backend_ready,
-        chunk_seconds: plan.chunk_seconds,
-        stitch_ms: plan.stitch_ms,
         target_apps: default_target_apps(),
         next_step,
     }
@@ -230,7 +182,7 @@ pub async fn status_snapshot(
         .collect::<Vec<_>>();
     AudioStatusSnapshot {
         running: true,
-        project: project_status(config),
+        project: project_status(),
         active_taps: taps,
         audio_bind: config.audio_bind.clone(),
         audio_port: config.audio_port,
@@ -256,13 +208,110 @@ pub fn audio_transcript_dir(config: &AppConfig) -> PathBuf {
     Path::new(&config.audio_output_dir).join("transcripts")
 }
 
-pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
-    match capture_backend_state() {
-        CaptureBackendState::Ready => enumerate_process_sessions(),
-        CaptureBackendState::Unsupported => {
-            Err("Audio session enumeration is only supported on Windows".to_string())
+pub(crate) fn display_name_from_exe_path(exe_path: &str) -> String {
+    // Works with both Windows (backslash) and Unix (forward-slash) paths.
+    let basename = exe_path
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(exe_path);
+    basename
+        .strip_suffix(".exe")
+        .or_else(|| basename.strip_suffix(".EXE"))
+        .unwrap_or(basename)
+        .to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn exe_path_from_pid(pid: u32) -> String {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return format!("pid:{pid}");
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if ok != 0 {
+            String::from_utf16_lossy(&buf[..size as usize])
+        } else {
+            format!("pid:{pid}")
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    use wasapi::{DeviceEnumerator, Direction};
+
+    // S_OK=0 (newly initialized) and S_FALSE=1 (already MTA) are both fine.
+    let _ = wasapi::initialize_mta();
+
+    let dev_enum = DeviceEnumerator::new().map_err(|e| format!("DeviceEnumerator::new: {e}"))?;
+    let collection = dev_enum
+        .get_device_collection(&Direction::Render)
+        .map_err(|e| format!("get_device_collection: {e}"))?;
+
+    let mut sessions: Vec<AudioSessionInfo> = Vec::new();
+    let mut seen_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for device_result in &collection {
+        let device = match device_result {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let manager = match device.get_iaudiosessionmanager() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let session_enum = match manager.get_audiosessionenumerator() {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let count = match session_enum.get_count() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for i in 0..count {
+            let control = match session_enum.get_session(i) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let pid = match control.get_process_id() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if pid == 0 || !seen_pids.insert(pid) {
+                continue;
+            }
+            let state_str = control
+                .get_state()
+                .map(|s| format!("{s:?}").to_lowercase())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let exe_path = exe_path_from_pid(pid);
+            let display_name = display_name_from_exe_path(&exe_path);
+            let matched_target = match_target_app(&exe_path).map(|t| t.id);
+            sessions.push(AudioSessionInfo {
+                session_id: format!("{pid}"),
+                pid,
+                exe_path,
+                display_name,
+                state: state_str,
+                matched_target,
+            });
+        }
+    }
+
+    Ok(sessions)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    Err("Audio session enumeration is only supported on Windows".to_string())
 }
 
 pub async fn start_tap(
@@ -273,7 +322,6 @@ pub async fn start_tap(
     include_tree: bool,
 ) -> Result<ActiveTap, String> {
     ensure_audio_dirs(config)?;
-    let plan = chunk_plan(config);
     match capture_backend_state() {
         CaptureBackendState::Ready => {}
         CaptureBackendState::Unsupported => {
@@ -281,31 +329,15 @@ pub async fn start_tap(
         }
     }
 
-    let resolved_pid = if pid == 0 {
-        resolve_target_pid(app_name)?
-    } else {
-        pid
-    };
-
-    let mut guard = registry.lock().await;
-    if let Some(existing) = guard
-        .taps
-        .values()
-        .find(|tap| tap.app_name == app_name && tap_is_active(tap))
-        .cloned()
-    {
-        return Ok(existing);
-    }
-
+    let normalized_app = app_name.trim().to_ascii_lowercase();
+    let target_pid = resolve_target_pid(&normalized_app, pid)?;
     let tap_id = format!("{}-{}", app_name, unix_millis());
     let tap = ActiveTap {
         tap_id: tap_id.clone(),
-        app_name: app_name.to_string(),
-        target_pid: resolved_pid,
+        app_name: normalized_app.clone(),
+        target_pid,
         include_tree,
         started_at: now_rfc3339(),
-        chunk_seconds: plan.chunk_seconds,
-        stitch_ms: plan.stitch_ms,
         chunks_written: 0,
         bytes_captured: 0,
         output_dir: config.audio_output_dir.clone(),
@@ -317,595 +349,51 @@ pub async fn start_tap(
     };
 
     let stop_flag = Arc::new(AtomicBool::new(false));
-    guard.taps.insert(tap_id.clone(), tap.clone());
-    guard.controls.insert(
-        tap_id.clone(),
-        TapRuntime {
-            stop_flag: stop_flag.clone(),
-        },
-    );
-    drop(guard);
-
-    spawn_tap_worker(
+    let worker = spawn_capture_worker(
         registry.clone(),
         config.clone(),
-        tap_id.clone(),
-        app_name.to_string(),
-        resolved_pid,
-        include_tree,
-        stop_flag,
+        tap.clone(),
+        stop_flag.clone(),
+    )?;
+
+    let mut guard = registry.lock().await;
+    guard.taps.insert(tap_id.clone(), tap.clone());
+    guard.runtime.insert(
+        tap_id,
+        TapRuntime {
+            stop_flag,
+            worker: Some(worker),
+        },
     );
     Ok(tap)
 }
 
 pub async fn stop_tap(registry: &SharedTapRegistry, tap_id: &str) -> Result<ActiveTap, String> {
-    let mut guard = registry.lock().await;
-    let runtime = guard.controls.get(tap_id).cloned();
-    let tap = guard
-        .taps
-        .get_mut(tap_id)
-        .ok_or_else(|| format!("Tap not found: {}", tap_id))?;
-    if let Some(runtime) = runtime {
+    let runtime = {
+        let mut guard = registry.lock().await;
+        let tap = guard
+            .taps
+            .get_mut(tap_id)
+            .ok_or_else(|| format!("Tap not found: {}", tap_id))?;
+        tap.status = TapStatus::Stopped;
+        tap.status_detail = None;
+        guard.runtime.remove(tap_id)
+    };
+
+    if let Some(mut runtime) = runtime {
         runtime.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(worker) = runtime.worker.take() {
+            let _ = worker.join();
+        }
     }
-    tap.status = TapStatus::Stopped;
-    tap.status_detail = None;
-    Ok(tap.clone())
+
+    get_tap(registry, tap_id)
+        .await
+        .ok_or_else(|| format!("Tap not found after stop: {}", tap_id))
 }
 
 pub async fn get_tap(registry: &SharedTapRegistry, tap_id: &str) -> Option<ActiveTap> {
     registry.lock().await.taps.get(tap_id).cloned()
-}
-
-pub fn tap_is_active(tap: &ActiveTap) -> bool {
-    tap.status != TapStatus::Stopped
-}
-
-fn spawn_tap_worker(
-    registry: SharedTapRegistry,
-    config: AppConfig,
-    tap_id: String,
-    app_name: String,
-    pid: u32,
-    include_tree: bool,
-    stop_flag: Arc<AtomicBool>,
-) {
-    let runtime = tokio::runtime::Handle::current();
-    thread::spawn(move || {
-        let result = capture_chunks(
-            &runtime,
-            registry.clone(),
-            &config,
-            &tap_id,
-            &app_name,
-            pid,
-            include_tree,
-            stop_flag,
-        );
-
-        if let Err(error) = result {
-            runtime.block_on(update_tap_error(&registry, &tap_id, &error));
-        }
-
-        runtime.block_on(finalize_tap_stop(&registry, &tap_id));
-    });
-}
-
-fn capture_chunks(
-    runtime: &tokio::runtime::Handle,
-    registry: SharedTapRegistry,
-    config: &AppConfig,
-    tap_id: &str,
-    app_name: &str,
-    pid: u32,
-    include_tree: bool,
-    stop_flag: Arc<AtomicBool>,
-) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        return capture_chunks_windows(
-            runtime,
-            registry,
-            config,
-            tap_id,
-            app_name,
-            pid,
-            include_tree,
-            stop_flag,
-        );
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (
-            runtime,
-            registry,
-            config,
-            tap_id,
-            app_name,
-            pid,
-            include_tree,
-            stop_flag,
-        );
-        Err("audio capture is only supported on Windows".to_string())
-    }
-}
-
-async fn update_tap_after_chunk(
-    registry: &SharedTapRegistry,
-    tap_id: &str,
-    wav_path: &Path,
-    transcript_path: Option<&Path>,
-    bytes_written: u64,
-    chunk_ts: &str,
-    status_detail: Option<&str>,
-) {
-    let mut guard = registry.lock().await;
-    if let Some(tap) = guard.taps.get_mut(tap_id) {
-        tap.chunks_written += 1;
-        tap.bytes_captured += bytes_written;
-        tap.last_chunk_path = Some(wav_path.to_string_lossy().into_owned());
-        tap.last_chunk_ts = Some(chunk_ts.to_string());
-        tap.last_transcript_path = transcript_path.map(|path| path.to_string_lossy().into_owned());
-        tap.status = TapStatus::Running;
-        tap.status_detail = status_detail.map(|value| value.to_string());
-    }
-}
-
-async fn update_tap_error(registry: &SharedTapRegistry, tap_id: &str, error: &str) {
-    let mut guard = registry.lock().await;
-    if let Some(tap) = guard.taps.get_mut(tap_id) {
-        tap.status = TapStatus::Error;
-        tap.status_detail = Some(error.to_string());
-    }
-}
-
-async fn finalize_tap_stop(registry: &SharedTapRegistry, tap_id: &str) {
-    let mut guard = registry.lock().await;
-    guard.controls.remove(tap_id);
-    if let Some(tap) = guard.taps.get_mut(tap_id) {
-        if tap.status != TapStatus::Error {
-            tap.status = TapStatus::Stopped;
-            tap.status_detail = None;
-        }
-    }
-}
-
-fn transcript_file_name(app_name: &str, chunk_started_at: OffsetDateTime) -> String {
-    format!(
-        "{}_{}{:02}{:02}T{:02}{:02}{:02}.txt",
-        app_name,
-        chunk_started_at.year(),
-        u8::from(chunk_started_at.month()),
-        chunk_started_at.day(),
-        chunk_started_at.hour(),
-        chunk_started_at.minute(),
-        chunk_started_at.second()
-    )
-}
-
-fn wav_file_name(app_name: &str, chunk_started_at: OffsetDateTime) -> String {
-    transcript_file_name(app_name, chunk_started_at).replace(".txt", ".wav")
-}
-
-fn apply_retention(config: &AppConfig, app_name: &str, keep: usize) -> Result<(), String> {
-    prune_old_files(&audio_wav_dir(config), "wav", app_name, keep)?;
-    prune_old_files(&audio_transcript_dir(config), "txt", app_name, keep)?;
-    Ok(())
-}
-
-fn prune_old_files(dir: &Path, ext: &str, app_name: &str, keep: usize) -> Result<(), String> {
-    let mut entries = vec![];
-    let rd = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return Ok(()),
-    };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some(ext) {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if !name.starts_with(&format!("{app_name}_")) {
-            continue;
-        }
-        entries.push(path);
-    }
-    entries.sort();
-    if entries.len() <= keep {
-        return Ok(());
-    }
-    let remove_count = entries.len().saturating_sub(keep);
-    for path in entries.into_iter().take(remove_count) {
-        fs::remove_file(&path).map_err(|e| format!("remove {}: {}", path.display(), e))?;
-    }
-    Ok(())
-}
-
-async fn transcribe_wav(config: &AppConfig, wav_path: &Path) -> Result<String, String> {
-    if config.audio_transport != "http" {
-        return Err(format!(
-            "AUDIO_TRANSPORT={} is not implemented; use http",
-            config.audio_transport
-        ));
-    }
-
-    let bytes = tokio::fs::read(wav_path)
-        .await
-        .map_err(|e| format!("read wav {}: {}", wav_path.display(), e))?;
-    let file_name = wav_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("chunk.wav")
-        .to_string();
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(file_name)
-        .mime_str("audio/wav")
-        .map_err(|e| format!("mime: {}", e))?;
-    let form = reqwest::multipart::Form::new().part("audio_file", part);
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&config.whisper_url)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("whisper request: {}", e))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("read whisper response: {}", e))?;
-    if !status.is_success() {
-        return Err(format!("whisper status {}: {}", status, body));
-    }
-    extract_whisper_text(&body)
-}
-
-fn extract_whisper_text(body: &str) -> Result<String, String> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(text) = value.get("text").and_then(|text| text.as_str()) {
-            return Ok(text.trim().to_string());
-        }
-        if let Some(text) = value.get("result").and_then(|text| text.as_str()) {
-            return Ok(text.trim().to_string());
-        }
-    }
-    Ok(trimmed.to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn enumerate_process_sessions() -> Result<Vec<AudioSessionInfo>, String> {
-    #[derive(Deserialize)]
-    struct ProcessEntry {
-        #[serde(rename = "Id")]
-        id: u32,
-        #[serde(rename = "ProcessName")]
-        process_name: String,
-        #[serde(rename = "Path")]
-        path: Option<String>,
-    }
-
-    let script = "Get-Process | Where-Object { $_.Path -and ($_.Path -match 'zoom' -or $_.Path -match 'discord' -or $_.ProcessName -match 'zoom' -or $_.ProcessName -match 'discord') } | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress";
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .map_err(|e| format!("powershell enumerate: {}", e))?;
-    if !output.status.success() {
-        return Err(format!(
-            "powershell enumerate failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() || stdout == "null" {
-        return Ok(vec![]);
-    }
-
-    let entries: Vec<ProcessEntry> = match serde_json::from_str::<Vec<ProcessEntry>>(&stdout) {
-        Ok(items) => items,
-        Err(_) => {
-            let one = serde_json::from_str::<ProcessEntry>(&stdout)
-                .map_err(|e| format!("parse powershell process JSON: {}", e))?;
-            vec![one]
-        }
-    };
-
-    Ok(entries
-        .into_iter()
-        .filter_map(|entry| {
-            let exe_path = entry.path.unwrap_or_else(|| entry.process_name.clone());
-            let matched = match_target_app(&exe_path)?;
-            Some(AudioSessionInfo {
-                session_id: format!("proc-{}", entry.id),
-                pid: entry.id,
-                exe_path,
-                display_name: entry.process_name,
-                state: "process_running".to_string(),
-                matched_target: Some(matched.id),
-            })
-        })
-        .collect())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn enumerate_process_sessions() -> Result<Vec<AudioSessionInfo>, String> {
-    Err("Audio session enumeration is only supported on Windows".to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn resolve_target_pid(app_name: &str) -> Result<u32, String> {
-    let sessions = enumerate_process_sessions()?;
-    sessions
-        .into_iter()
-        .find(|session| session.matched_target.as_deref() == Some(app_name))
-        .map(|session| session.pid)
-        .ok_or_else(|| format!("No running process found for {}", app_name))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn resolve_target_pid(app_name: &str) -> Result<u32, String> {
-    Err(format!(
-        "No running process found for {} on this platform",
-        app_name
-    ))
-}
-
-#[cfg(target_os = "windows")]
-fn capture_chunks_windows(
-    runtime: &tokio::runtime::Handle,
-    registry: SharedTapRegistry,
-    config: &AppConfig,
-    tap_id: &str,
-    app_name: &str,
-    pid: u32,
-    include_tree: bool,
-    stop_flag: Arc<AtomicBool>,
-) -> Result<(), String> {
-    use wasapi::{AudioClient, Direction, SampleType, ShareMode, WaveFormat};
-
-    let hr = wasapi::initialize_mta();
-    if hr.is_err() {
-        return Err(format!("initialize_mta: HRESULT {:#X}", hr.0));
-    }
-
-    let desired_format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
-    let blockalign = desired_format.get_blockalign() as usize;
-    let sample_rate = 48_000usize;
-    let plan = chunk_plan(config);
-    let chunk_frames = usize::from(plan.chunk_seconds) * sample_rate;
-    let preroll_frames = usize::from(plan.stitch_ms) * sample_rate / 1000;
-    let mut audio_client = AudioClient::new_application_loopback_client(pid, include_tree)
-        .map_err(|e| format!("loopback client: {}", e))?;
-    audio_client
-        .initialize_client(
-            &desired_format,
-            0,
-            &Direction::Capture,
-            &ShareMode::Shared,
-            true,
-        )
-        .map_err(|e| format!("initialize capture client: {}", e))?;
-    let h_event = audio_client
-        .set_get_eventhandle()
-        .map_err(|e| format!("set event handle: {}", e))?;
-    let capture_client = audio_client
-        .get_audiocaptureclient()
-        .map_err(|e| format!("get capture client: {}", e))?;
-    audio_client
-        .start_stream()
-        .map_err(|e| format!("start stream: {}", e))?;
-
-    let started_ms = unix_millis() as i64;
-    let mut queue: VecDeque<u8> = VecDeque::new();
-    let mut nominal_samples: Vec<i16> = Vec::with_capacity(chunk_frames);
-    let mut last_tail: Vec<i16> = Vec::with_capacity(preroll_frames);
-    let mut chunk_index: u64 = 0;
-
-    loop {
-        if stop_flag.load(Ordering::Relaxed) || !process_is_running(pid) {
-            break;
-        }
-
-        let new_frames = capture_client
-            .get_next_nbr_frames()
-            .map_err(|e| format!("get next frames: {}", e))?
-            .unwrap_or(0);
-        let additional = (new_frames as usize * blockalign)
-            .saturating_sub(queue.capacity().saturating_sub(queue.len()));
-        queue.reserve(additional);
-        if new_frames > 0 {
-            capture_client
-                .read_from_device_to_deque(&mut queue)
-                .map_err(|e| format!("read capture queue: {}", e))?;
-        }
-
-        while queue.len() >= blockalign {
-            let mut frame = [0u8; 8];
-            for byte in &mut frame {
-                *byte = queue.pop_front().unwrap_or_default();
-            }
-            let left = f32::from_le_bytes(frame[0..4].try_into().unwrap_or([0, 0, 0, 0]));
-            let right = f32::from_le_bytes(frame[4..8].try_into().unwrap_or([0, 0, 0, 0]));
-            nominal_samples.push(float_stereo_to_pcm16(left, right));
-
-            if nominal_samples.len() >= chunk_frames {
-                flush_chunk(
-                    runtime,
-                    registry.clone(),
-                    config,
-                    tap_id,
-                    app_name,
-                    started_ms,
-                    chunk_index,
-                    &nominal_samples,
-                    &last_tail,
-                )?;
-                chunk_index += 1;
-                last_tail = tail_samples(&nominal_samples, preroll_frames);
-                nominal_samples.clear();
-            }
-        }
-
-        if h_event.wait_for_event(250).is_err() {
-            thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    audio_client.stop_stream().ok();
-
-    if !nominal_samples.is_empty() {
-        flush_chunk(
-            runtime,
-            registry,
-            config,
-            tap_id,
-            app_name,
-            started_ms,
-            chunk_index,
-            &nominal_samples,
-            &last_tail,
-        )?;
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn flush_chunk(
-    runtime: &tokio::runtime::Handle,
-    registry: SharedTapRegistry,
-    config: &AppConfig,
-    tap_id: &str,
-    app_name: &str,
-    started_ms: i64,
-    chunk_index: u64,
-    nominal_samples: &[i16],
-    last_tail: &[i16],
-) -> Result<(), String> {
-    if nominal_samples.is_empty() {
-        return Ok(());
-    }
-
-    let chunk_started_at = chunk_started_at(started_ms, config.audio_chunk_seconds, chunk_index)?;
-    let wav_name = wav_file_name(app_name, chunk_started_at);
-    let txt_name = transcript_file_name(app_name, chunk_started_at);
-    let wav_path = audio_wav_dir(config).join(&wav_name);
-    let transcript_path = audio_transcript_dir(config).join(&txt_name);
-
-    let mut stitched = Vec::with_capacity(last_tail.len() + nominal_samples.len());
-    if chunk_index > 0 {
-        stitched.extend_from_slice(last_tail);
-    }
-    stitched.extend_from_slice(nominal_samples);
-
-    write_wav(&wav_path, &stitched, 48_000)?;
-
-    let transcript_result = runtime.block_on(transcribe_wav(config, &wav_path));
-    let (transcript_path_opt, status_detail) = match transcript_result {
-        Ok(text) => {
-            fs::write(&transcript_path, &text)
-                .map_err(|e| format!("write transcript {}: {}", transcript_path.display(), e))?;
-            let client = reqwest::Client::new();
-            runtime.block_on(notify_condor_intel(
-                &client,
-                config,
-                &txt_name,
-                app_name,
-                &text,
-                Some(
-                    &chunk_started_at
-                        .format(&Rfc3339)
-                        .unwrap_or_else(|_| now_rfc3339()),
-                ),
-            ));
-            (Some(transcript_path.clone()), None)
-        }
-        Err(error) => (None, Some(format!("transcription failed: {}", error))),
-    };
-
-    apply_retention(config, app_name, 360)?;
-
-    runtime.block_on(update_tap_after_chunk(
-        &registry,
-        tap_id,
-        &wav_path,
-        transcript_path_opt.as_deref(),
-        (stitched.len() * std::mem::size_of::<i16>()) as u64,
-        &chunk_started_at
-            .format(&Rfc3339)
-            .unwrap_or_else(|_| now_rfc3339()),
-        status_detail.as_deref(),
-    ));
-
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn write_wav(path: &Path, samples: &[i16], sample_rate: u32) -> Result<(), String> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(path, spec)
-        .map_err(|e| format!("create wav {}: {}", path.display(), e))?;
-    for sample in samples {
-        writer
-            .write_sample(*sample)
-            .map_err(|e| format!("write wav sample {}: {}", path.display(), e))?;
-    }
-    writer
-        .finalize()
-        .map_err(|e| format!("finalize wav {}: {}", path.display(), e))
-}
-
-#[cfg(target_os = "windows")]
-fn float_stereo_to_pcm16(left: f32, right: f32) -> i16 {
-    let mono = ((left + right) / 2.0).clamp(-1.0, 1.0);
-    (mono * i16::MAX as f32) as i16
-}
-
-#[cfg(target_os = "windows")]
-fn tail_samples(samples: &[i16], count: usize) -> Vec<i16> {
-    if count == 0 || samples.is_empty() {
-        return vec![];
-    }
-    let start = samples.len().saturating_sub(count);
-    samples[start..].to_vec()
-}
-
-#[cfg(target_os = "windows")]
-fn chunk_started_at(
-    started_ms: i64,
-    chunk_seconds: u16,
-    chunk_index: u64,
-) -> Result<OffsetDateTime, String> {
-    let offset_ms = i64::from(chunk_seconds) * 1000 * i64::try_from(chunk_index).unwrap_or(0);
-    let timestamp_ms = started_ms.saturating_add(offset_ms);
-    OffsetDateTime::from_unix_timestamp_nanos(i128::from(timestamp_ms) * 1_000_000)
-        .map_err(|e| format!("chunk timestamp: {}", e))
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn process_is_running(pid: u32) -> bool {
-    let script = format!("$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($p) {{ exit 0 }} else {{ exit 1 }}", pid);
-    std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-Command", &script])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn process_is_running(_pid: u32) -> bool {
-    false
 }
 
 pub fn list_transcripts(
@@ -1023,53 +511,6 @@ fn parse_timestamped_name(filename: &str) -> Option<(&str, OffsetDateTime)> {
     Some((app, parsed))
 }
 
-/// POST a completed transcript to condor-intel sidecar for gate + extraction.
-/// Fire-and-forget: logs errors but does not fail the caller.
-pub async fn notify_condor_intel(
-    client: &reqwest::Client,
-    config: &AppConfig,
-    transcript_id: &str,
-    app: &str,
-    text: &str,
-    chunk_started_at: Option<&str>,
-) {
-    let plan = chunk_plan(config);
-    let url = format!(
-        "{}/ingest/condor-audio",
-        config.condor_intel_url.trim_end_matches('/')
-    );
-    let payload = serde_json::json!({
-        "transcript_id": transcript_id,
-        "app": app,
-        "text": text,
-        "chunk_started_at": chunk_started_at,
-        "chunk_seconds": plan.chunk_seconds,
-        "stitch_ms": plan.stitch_ms,
-        "source": "condor_audio",
-    });
-    match client.post(&url).json(&payload).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            eprintln!(
-                "[condor_audio] condor-intel accepted transcript {}",
-                transcript_id
-            );
-        }
-        Ok(resp) => {
-            eprintln!(
-                "[condor_audio] condor-intel rejected transcript {} — status {}",
-                transcript_id,
-                resp.status()
-            );
-        }
-        Err(e) => {
-            eprintln!(
-                "[condor_audio] condor-intel POST failed for {}: {}",
-                transcript_id, e
-            );
-        }
-    }
-}
-
 fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -1083,31 +524,296 @@ fn unix_millis() -> u128 {
         .as_millis()
 }
 
+fn resolve_target_pid(app_name: &str, pid: u32) -> Result<u32, String> {
+    if pid != 0 {
+        return Ok(pid);
+    }
+    let sessions = enumerate_audio_sessions()?;
+    sessions
+        .into_iter()
+        .find(|session| session.matched_target.as_deref() == Some(app_name))
+        .map(|session| session.pid)
+        .ok_or_else(|| {
+            format!(
+                "No active audio session found for target app '{}'",
+                app_name
+            )
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_capture_worker(
+    registry: SharedTapRegistry,
+    config: AppConfig,
+    tap: ActiveTap,
+    stop_flag: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, String> {
+    std::thread::Builder::new()
+        .name(format!("condor-audio-{}", tap.tap_id))
+        .spawn(move || {
+            if let Err(err) = capture_loop(registry.clone(), config, tap.clone(), stop_flag.clone())
+            {
+                update_tap_terminal_error(&registry, &tap.tap_id, &err);
+                eprintln!("[condor_audio] tap {} failed: {}", tap.tap_id, err);
+            }
+        })
+        .map_err(|e| format!("spawn capture worker: {}", e))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_capture_worker(
+    _registry: SharedTapRegistry,
+    _config: AppConfig,
+    _tap: ActiveTap,
+    _stop_flag: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, String> {
+    Err("Audio tap start is only supported on Windows".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn capture_loop(
+    registry: SharedTapRegistry,
+    config: AppConfig,
+    tap: ActiveTap,
+    stop_flag: Arc<AtomicBool>,
+) -> Result<(), String> {
+    use std::collections::VecDeque;
+    use wasapi::{AudioClient, Direction, SampleType, StreamMode, WaveFormat};
+
+    let _ = wasapi::initialize_mta();
+
+    let desired_format = WaveFormat::new(
+        32,
+        32,
+        &SampleType::Float,
+        AUDIO_SAMPLE_RATE,
+        AUDIO_CHANNELS,
+        None,
+    );
+    let blockalign = desired_format.get_blockalign() as usize;
+    let mut audio_client =
+        AudioClient::new_application_loopback_client(tap.target_pid, tap.include_tree)
+            .map_err(|e| format!("create application loopback client: {e}"))?;
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: 0,
+    };
+    audio_client
+        .initialize_client(&desired_format, &Direction::Capture, &mode)
+        .map_err(|e| format!("initialize audio client: {e}"))?;
+    let event = audio_client
+        .set_get_eventhandle()
+        .map_err(|e| format!("set event handle: {e}"))?;
+    let capture_client = audio_client
+        .get_audiocaptureclient()
+        .map_err(|e| format!("get capture client: {e}"))?;
+
+    let frames_per_chunk = AUDIO_CHUNK_SECONDS * AUDIO_SAMPLE_RATE as usize;
+    let bytes_per_chunk = frames_per_chunk * blockalign;
+    let mut sample_queue: VecDeque<u8> = VecDeque::new();
+
+    audio_client
+        .start_stream()
+        .map_err(|e| format!("start stream: {e}"))?;
+    eprintln!(
+        "[condor_audio] tap {} started for pid={} app={}",
+        tap.tap_id, tap.target_pid, tap.app_name
+    );
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        let new_frames = capture_client
+            .get_next_packet_size()
+            .map_err(|e| format!("get next packet size: {e}"))?
+            .unwrap_or(0);
+        let additional = (new_frames as usize * blockalign)
+            .saturating_sub(sample_queue.capacity().saturating_sub(sample_queue.len()));
+        sample_queue.reserve(additional);
+        if new_frames > 0 {
+            capture_client
+                .read_from_device_to_deque(&mut sample_queue)
+                .map_err(|e| format!("capture read: {e}"))?;
+        }
+
+        while sample_queue.len() >= bytes_per_chunk {
+            let mut chunk = vec![0u8; bytes_per_chunk];
+            for item in chunk.iter_mut() {
+                *item = sample_queue.pop_front().unwrap_or_default();
+            }
+            let chunk_ts = OffsetDateTime::now_utc();
+            let wav_path = write_wav_chunk(&config, &tap.app_name, chunk_ts, &chunk)?;
+            let transcript_path =
+                maybe_transcribe_chunk(&config, &tap.app_name, chunk_ts, &wav_path)?;
+            update_tap_after_chunk(
+                &registry,
+                &tap.tap_id,
+                bytes_per_chunk as u64,
+                wav_path,
+                transcript_path,
+                chunk_ts,
+            );
+        }
+
+        if event.wait_for_event(3000).is_err() {
+            break;
+        }
+    }
+
+    audio_client
+        .stop_stream()
+        .map_err(|e| format!("stop stream: {e}"))?;
+    eprintln!("[condor_audio] tap {} stopped", tap.tap_id);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn update_tap_after_chunk(
+    registry: &SharedTapRegistry,
+    tap_id: &str,
+    bytes_captured: u64,
+    wav_path: PathBuf,
+    transcript_path: Option<PathBuf>,
+    chunk_ts: OffsetDateTime,
+) {
+    let mut guard = registry.blocking_lock();
+    if let Some(tap) = guard.taps.get_mut(tap_id) {
+        tap.chunks_written += 1;
+        tap.bytes_captured += bytes_captured;
+        tap.last_chunk_path = Some(wav_path.to_string_lossy().into_owned());
+        tap.last_chunk_ts = Some(
+            chunk_ts
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| chunk_ts.to_string()),
+        );
+        tap.last_transcript_path = transcript_path.map(|p| p.to_string_lossy().into_owned());
+        tap.status = TapStatus::Running;
+        tap.status_detail = None;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn update_tap_terminal_error(registry: &SharedTapRegistry, tap_id: &str, detail: &str) {
+    let mut guard = registry.blocking_lock();
+    if let Some(tap) = guard.taps.get_mut(tap_id) {
+        tap.status = TapStatus::Error;
+        tap.status_detail = Some(detail.to_string());
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn write_wav_chunk(
+    config: &AppConfig,
+    app_name: &str,
+    chunk_ts: OffsetDateTime,
+    raw_f32le_stereo: &[u8],
+) -> Result<PathBuf, String> {
+    let wav_path =
+        audio_wav_dir(config).join(format!("{}.wav", timestamped_stem(app_name, chunk_ts)));
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: AUDIO_SAMPLE_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&wav_path, spec)
+        .map_err(|e| format!("create wav writer: {}", e))?;
+    for mono_sample in downmix_stereo_f32_to_mono_i16(raw_f32le_stereo) {
+        writer
+            .write_sample(mono_sample)
+            .map_err(|e| format!("write wav sample: {}", e))?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| format!("finalize wav: {}", e))?;
+    Ok(wav_path)
+}
+
+#[cfg(target_os = "windows")]
+fn maybe_transcribe_chunk(
+    config: &AppConfig,
+    app_name: &str,
+    chunk_ts: OffsetDateTime,
+    wav_path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if config.whisper_url.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let wav_bytes = fs::read(wav_path).map_err(|e| format!("read wav for transcript: {}", e))?;
+    let file_name = wav_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("chunk.wav")
+        .to_string();
+    let part = reqwest::blocking::multipart::Part::bytes(wav_bytes)
+        .file_name(file_name)
+        .mime_str("audio/wav")
+        .map_err(|e| format!("set wav mime: {}", e))?;
+    let form = reqwest::blocking::multipart::Form::new()
+        .part("file", part)
+        .text("temperature", "0");
+    let response = reqwest::blocking::Client::new()
+        .post(&config.whisper_url)
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("POST whisper: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("whisper returned HTTP {}", response.status()));
+    }
+
+    let body = response
+        .text()
+        .map_err(|e| format!("read whisper response: {}", e))?;
+    let transcript = parse_whisper_response_text(&body)?;
+    if transcript.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let transcript_path =
+        audio_transcript_dir(config).join(format!("{}.txt", timestamped_stem(app_name, chunk_ts)));
+    fs::write(&transcript_path, transcript).map_err(|e| format!("write transcript: {}", e))?;
+    Ok(Some(transcript_path))
+}
+
+#[cfg(target_os = "windows")]
+fn parse_whisper_response_text(body: &str) -> Result<String, String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+            return Ok(text.to_string());
+        }
+    }
+    Ok(body.trim().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn timestamped_stem(app_name: &str, chunk_ts: OffsetDateTime) -> String {
+    format!(
+        "{}_{:04}{:02}{:02}T{:02}{:02}{:02}",
+        app_name,
+        chunk_ts.year(),
+        u8::from(chunk_ts.month()),
+        chunk_ts.day(),
+        chunk_ts.hour(),
+        chunk_ts.minute(),
+        chunk_ts.second()
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn downmix_stereo_f32_to_mono_i16(raw_f32le_stereo: &[u8]) -> Vec<i16> {
+    raw_f32le_stereo
+        .chunks_exact(8)
+        .map(|frame| {
+            let left = f32::from_le_bytes(frame[0..4].try_into().unwrap_or([0; 4]));
+            let right = f32::from_le_bytes(frame[4..8].try_into().unwrap_or([0; 4]));
+            let mixed = ((left + right) * 0.5).clamp(-1.0, 1.0);
+            (mixed * i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppConfig;
-
-    fn test_config() -> AppConfig {
-        AppConfig {
-            api_key: String::new(),
-            redis_url: String::new(),
-            model: String::new(),
-            discord_bridge_url: None,
-            coord_api_url: String::new(),
-            coord_api_token: String::new(),
-            condor_eye_bind: "0.0.0.0".to_string(),
-            condor_eye_port: 9050,
-            audio_bind: "127.0.0.1".to_string(),
-            audio_port: 9051,
-            audio_output_dir: "/tmp/condor-audio".to_string(),
-            audio_transport: "http".to_string(),
-            whisper_url: "http://localhost:8080/inference".to_string(),
-            audio_chunk_seconds: 10,
-            audio_stitch_ms: 1500,
-            condor_intel_url: "http://localhost:8791".to_string(),
-        }
-    }
 
     #[test]
     fn zoom_matcher_is_case_insensitive() {
@@ -1150,94 +856,76 @@ mod tests {
     }
 
     #[test]
-    fn chunk_plan_uses_expected_defaults() {
-        let plan = chunk_plan(&test_config());
-        assert_eq!(plan.chunk_seconds, 10);
-        assert_eq!(plan.stitch_ms, 1500);
+    fn display_name_strips_windows_path_and_extension() {
+        assert_eq!(
+            display_name_from_exe_path(r"C:\Program Files\Zoomin\Zoom.exe"),
+            "Zoom"
+        );
     }
 
     #[test]
-    fn chunk_plan_clamps_stitch_to_chunk_length() {
-        let mut config = test_config();
-        config.audio_stitch_ms = 15_000;
-        let plan = chunk_plan(&config);
-        assert_eq!(plan.chunk_seconds, 10);
-        assert_eq!(plan.stitch_ms, 10_000);
+    fn display_name_strips_unix_path_and_extension() {
+        assert_eq!(display_name_from_exe_path("/usr/bin/zoom.exe"), "zoom");
     }
 
     #[test]
-    fn first_chunk_does_not_go_negative() {
-        let plan = AudioChunkPlan {
-            chunk_seconds: 10,
-            stitch_ms: 1500,
-        };
-        let window = chunk_window(plan, 0);
-        assert_eq!(window.nominal_start_ms, 0);
-        assert_eq!(window.capture_start_ms, 0);
-        assert_eq!(window.capture_end_ms, 10_000);
+    fn display_name_bare_name_no_extension() {
+        assert_eq!(display_name_from_exe_path("discord"), "discord");
     }
 
     #[test]
-    fn later_chunks_include_preroll_overlap() {
-        let plan = AudioChunkPlan {
-            chunk_seconds: 10,
-            stitch_ms: 1500,
-        };
-        let window = chunk_window(plan, 2);
-        assert_eq!(window.nominal_start_ms, 20_000);
-        assert_eq!(window.capture_start_ms, 18_500);
-        assert_eq!(window.capture_end_ms, 30_000);
+    fn display_name_bare_exe_no_path() {
+        assert_eq!(display_name_from_exe_path("Discord.exe"), "Discord");
     }
 
     #[test]
-    fn transcription_failure_keeps_tap_running() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime.block_on(async {
-            let registry = Arc::new(Mutex::new(TapRegistry::default()));
-            {
-                let mut guard = registry.lock().await;
-                guard.taps.insert(
-                    "zoom-test".to_string(),
-                    ActiveTap {
-                        tap_id: "zoom-test".to_string(),
-                        app_name: "zoom".to_string(),
-                        target_pid: 1234,
-                        include_tree: true,
-                        started_at: now_rfc3339(),
-                        chunk_seconds: 10,
-                        stitch_ms: 1500,
-                        chunks_written: 0,
-                        bytes_captured: 0,
-                        output_dir: "/tmp/condor-audio".to_string(),
-                        status: TapStatus::Running,
-                        status_detail: None,
-                        last_chunk_path: None,
-                        last_chunk_ts: None,
-                        last_transcript_path: None,
-                    },
-                );
-            }
+    fn display_name_pid_fallback_unchanged() {
+        assert_eq!(display_name_from_exe_path("pid:1234"), "pid:1234");
+    }
 
-            update_tap_after_chunk(
-                &registry,
-                "zoom-test",
-                Path::new("/tmp/condor-audio/wav/zoom_20260325T010000.wav"),
-                None,
-                1024,
-                "2026-03-25T01:00:00Z",
-                Some("transcription failed: timeout"),
-            )
-            .await;
+    #[test]
+    fn parse_timestamped_wav_name() {
+        let parsed =
+            parse_timestamped_name("discord_20260324T090000.wav").expect("timestamped wav name");
+        assert_eq!(parsed.0, "discord");
+        assert_eq!(parsed.1.year(), 2026);
+    }
 
-            let tap = get_tap(&registry, "zoom-test").await.expect("tap");
-            assert_eq!(tap.status, TapStatus::Running);
-            assert_eq!(
-                tap.status_detail.as_deref(),
-                Some("transcription failed: timeout")
-            );
-        });
+    #[test]
+    fn parse_timestamped_name_bad_format_returns_none() {
+        assert!(parse_timestamped_name("nodash.txt").is_none());
+        assert!(parse_timestamped_name("app_badts.txt").is_none());
+        assert!(parse_timestamped_name("").is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn enumerate_sessions_returns_error_on_non_windows() {
+        let result = enumerate_audio_sessions();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only supported on Windows"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn capture_backend_unsupported_on_non_windows() {
+        assert_eq!(capture_backend_state(), CaptureBackendState::Unsupported);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn project_status_not_supported_on_non_windows() {
+        let status = project_status();
+        assert!(!status.supported);
+        assert!(!status.backend_ready);
+        assert_eq!(status.backend, "unsupported-platform");
+    }
+
+    #[test]
+    fn default_target_apps_has_zoom_and_discord() {
+        let apps = default_target_apps();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].id, "zoom");
+        assert_eq!(apps[1].id, "discord");
     }
 }
