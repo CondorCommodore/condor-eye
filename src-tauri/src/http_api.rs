@@ -41,6 +41,14 @@ pub struct CaptureRequest {
     /// Requires `hwnd` to resolve window bounds. Ignored if `hwnd` is not set.
     #[serde(default)]
     pub no_focus: bool,
+    /// If true, skip AI description and return raw image only (no API cost).
+    /// Default: true (safe — no charges). Set to false to enable AI description.
+    #[serde(default = "default_true")]
+    pub raw_only: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize)]
@@ -329,7 +337,26 @@ async fn handle_capture(
 
     eprintln!("[CE] captured {} bytes, region: {:?}", png.len(), region);
 
-    // Send to Condor Vision
+    let image = base64::engine::general_purpose::STANDARD.encode(&png);
+
+    // Raw mode (default): return image only, no AI call, no cost
+    if req.raw_only || prompt.is_empty() {
+        eprintln!("[CE] capture response: raw only (no AI call)");
+        return Ok(Json(CaptureResponse {
+            image,
+            description: String::new(),
+            latency_ms: 0,
+            region,
+            cost_estimate_usd: 0.0,
+        }));
+    }
+
+    // AI mode: explicitly requested via raw_only=false AND prompt set
+    // WARNING: This calls the Anthropic API and costs money
+    if state.config.api_key.is_empty() {
+        return Err(api_error("AI description requested but ANTHROPIC_API_KEY not set. Use raw_only=true for free captures.".to_string()));
+    }
+    eprintln!("[CE] WARNING: AI description requested — calling Anthropic API (costs money)");
     let start = std::time::Instant::now();
     let description =
         claude::describe_screenshot(&state.config.api_key, &png, &state.config.model, &prompt)
@@ -338,12 +365,12 @@ async fn handle_capture(
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let cost = config::estimate_cost(region.width, region.height, &state.config.model);
-    let image = base64::engine::general_purpose::STANDARD.encode(&png);
 
     eprintln!(
-        "[CE] capture response: {}ms, {} chars",
+        "[CE] capture response: {}ms, {} chars, ${:.4}",
         latency_ms,
-        description.len()
+        description.len(),
+        cost
     );
 
     Ok(Json(CaptureResponse {
@@ -372,6 +399,12 @@ async fn handle_locate(
         png.len(),
         req.target
     );
+
+    // Locate requires AI — check for API key and warn about cost
+    if state.config.api_key.is_empty() {
+        return Err(api_error("/api/locate requires ANTHROPIC_API_KEY — this endpoint calls the Anthropic API (costs money)".to_string()));
+    }
+    eprintln!("[CE] WARNING: /api/locate calls Anthropic API (costs money)");
 
     let prompt = format!(
         "You are a screen analysis assistant. Look at this screenshot and find: {}\n\n\
