@@ -65,7 +65,8 @@ Profiles specify: extraction prompt, truth source, comparison config.
 
 | Variable | Required | Default |
 |---|---|---|
-| ANTHROPIC_API_KEY | Yes | (none) |
+| ANTHROPIC_API_KEY | Yes (if vision enabled) | (none) |
+| CONDOR_VISION_ENABLED | No | false — captures skip the AI call to save costs |
 | REDIS_URL | No | redis://127.0.0.1:6379 |
 | CLAUDE_MODEL | No | claude-haiku-4-5-20251001 |
 | CONDOR_EYE_BIND | No | 0.0.0.0 |

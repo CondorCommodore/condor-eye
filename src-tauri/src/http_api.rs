@@ -71,6 +71,7 @@ pub struct StatusResponse {
     pub version: String,
     pub api_key_configured: bool,
     pub model: String,
+    pub vision_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -110,6 +111,7 @@ async fn handle_status(State(state): State<Arc<HttpState>>) -> Json<StatusRespon
         version: env!("CARGO_PKG_VERSION").to_string(),
         api_key_configured: !state.config.api_key.is_empty(),
         model: state.config.model.clone(),
+        vision_enabled: state.config.vision_enabled,
     })
 }
 
@@ -329,6 +331,21 @@ async fn handle_capture(
 
     eprintln!("[CE] captured {} bytes, region: {:?}", png.len(), region);
 
+    let image = base64::engine::general_purpose::STANDARD.encode(&png);
+
+    // Gate: skip the paid Anthropic Vision API call when vision is disabled
+    if !state.config.vision_enabled {
+        eprintln!("[CE] vision disabled — returning capture without AI analysis");
+        return Ok(Json(CaptureResponse {
+            image,
+            description: "(vision disabled — set CONDOR_VISION_ENABLED=1 to enable AI analysis)"
+                .to_string(),
+            latency_ms: 0,
+            region,
+            cost_estimate_usd: 0.0,
+        }));
+    }
+
     // Send to Condor Vision
     let start = std::time::Instant::now();
     let description =
@@ -338,7 +355,6 @@ async fn handle_capture(
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let cost = config::estimate_cost(region.width, region.height, &state.config.model);
-    let image = base64::engine::general_purpose::STANDARD.encode(&png);
 
     eprintln!(
         "[CE] capture response: {}ms, {} chars",
@@ -359,6 +375,14 @@ async fn handle_locate(
     State(state): State<Arc<HttpState>>,
     Json(req): Json<LocateRequest>,
 ) -> Result<Json<LocateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Gate: locate requires vision — it's pure AI analysis
+    if !state.config.vision_enabled {
+        return Err(api_error(
+            "Vision is disabled (set CONDOR_VISION_ENABLED=1). Locate requires AI analysis."
+                .to_string(),
+        ));
+    }
+
     let _guard = state.capture_lock.lock().await;
 
     // Always full-screen for locate

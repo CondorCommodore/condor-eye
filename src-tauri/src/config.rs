@@ -20,6 +20,10 @@ pub struct AppConfig {
     pub audio_stitch_ms: u16,
     pub condor_intel_url: String,
     pub audio_auto_watch: bool,
+    /// When false (the default), capture endpoints skip the Anthropic Vision API
+    /// call entirely. Captures still return the screenshot but no AI description.
+    /// Set CONDOR_VISION_ENABLED=1 to enable paid API calls.
+    pub vision_enabled: bool,
 }
 
 impl AppConfig {
@@ -69,6 +73,15 @@ impl AppConfig {
             condor_intel_url: std::env::var("CONDOR_INTEL_URL")
                 .unwrap_or_else(|_| "http://localhost:8791".to_string()),
             audio_auto_watch: std::env::var("CONDOR_AUDIO_AUTO_WATCH")
+                .ok()
+                .map(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false),
+            vision_enabled: std::env::var("CONDOR_VISION_ENABLED")
                 .ok()
                 .map(|value| {
                     matches!(

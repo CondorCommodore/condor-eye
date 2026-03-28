@@ -94,6 +94,32 @@ async fn capture_and_compare(
     // 4. Restore frame
     let _ = window.show();
 
+    // Gate: skip the paid Anthropic Vision API call when vision is disabled
+    if !cfg.vision_enabled {
+        eprintln!("[VV] vision disabled — skipping extraction API call");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        return Ok(ComparisonReport {
+            timestamp: now,
+            symbol,
+            overall: Status::ExtractOnly,
+            extracted_bids: 0,
+            extracted_asks: 0,
+            truth_bids: 0,
+            truth_asks: 0,
+            best_bid_match: false,
+            best_ask_match: false,
+            mismatches: vec![],
+            missing: vec![],
+            extra: vec![],
+            api_latency_ms: 0,
+            estimated_cost_usd: 0.0,
+            extraction: None,
+        });
+    }
+
     // 5. Send to Claude API (async — profile provides the prompt)
     let start = std::time::Instant::now();
     let extracted =
@@ -208,6 +234,14 @@ async fn capture_free(
 
     let _ = window.show();
     eprintln!("[VV] free: captured {} bytes", png.len());
+
+    // Gate: skip the paid Anthropic Vision API call when vision is disabled
+    if !cfg.vision_enabled {
+        eprintln!("[VV] vision disabled — skipping free capture API call");
+        return Ok(
+            "(vision disabled — set CONDOR_VISION_ENABLED=1 to enable AI analysis)".to_string(),
+        );
+    }
 
     // Send to Claude — raw text response, no JSON parsing
     let client = reqwest::Client::new();
@@ -418,6 +452,13 @@ fn main() {
     }
 
     let app_config = AppConfig::from_env();
+
+    if app_config.vision_enabled {
+        eprintln!("[CE] Anthropic Vision API ENABLED — captures will call the AI");
+    } else {
+        eprintln!("[CE] Anthropic Vision API DISABLED (default) — captures return screenshots only");
+        eprintln!("[CE]   To enable: set CONDOR_VISION_ENABLED=1");
+    }
 
     // Load profiles from the profiles/ directory.
     // Try: exe parent (release), cwd (dev), cwd parent (dev from src-tauri/).
