@@ -289,10 +289,317 @@ mod platform {
 }
 
 // ---------------------------------------------------------------------------
-// Stub implementation (non-Windows)
+// macOS implementation via CoreGraphics + NSRunningApplication
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::WindowInfo;
+
+    use core::ffi::c_void;
+    use core_foundation::array::CFArrayGetValueAtIndex;
+    use core_foundation::base::TCFType;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryGetValue, CFDictionaryRef};
+    use core_foundation::number::{CFNumber, CFNumberRef};
+    use core_foundation::string::{CFString, CFStringRef};
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::window::{
+        copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly,
+    };
+
+    // Extract a f64 from a CFDictionary using a string key (for CGWindowBounds sub-dict).
+    fn dict_f64(dict: &CFDictionary, key: &str) -> f64 {
+        let cf_key = CFString::new(key);
+        let raw: *const c_void = unsafe {
+            CFDictionaryGetValue(
+                dict.as_concrete_TypeRef(),
+                cf_key.as_CFTypeRef() as *const c_void,
+            )
+        };
+        if raw.is_null() {
+            return 0.0;
+        }
+        let num: CFNumber =
+            unsafe { TCFType::wrap_under_get_rule(raw as CFNumberRef) };
+        num.to_f64().unwrap_or(0.0)
+    }
+
+    // Extract an i64 from a CFDictionary using a raw CFStringRef key.
+    fn dict_i64(dict: &CFDictionary, key_ref: CFStringRef) -> i64 {
+        let raw: *const c_void = unsafe {
+            CFDictionaryGetValue(
+                dict.as_concrete_TypeRef(),
+                key_ref as *const c_void,
+            )
+        };
+        if raw.is_null() {
+            return 0;
+        }
+        let num: CFNumber = unsafe { TCFType::wrap_under_get_rule(raw as CFNumberRef) };
+        num.to_i64().unwrap_or(0)
+    }
+
+    // Extract a String from a CFDictionary using a raw CFStringRef key.
+    fn dict_string(dict: &CFDictionary, key_ref: CFStringRef) -> Option<String> {
+        let raw: *const c_void = unsafe {
+            CFDictionaryGetValue(
+                dict.as_concrete_TypeRef(),
+                key_ref as *const c_void,
+            )
+        };
+        if raw.is_null() {
+            return None;
+        }
+        let cf_str: CFString =
+            unsafe { TCFType::wrap_under_get_rule(raw as CFStringRef) };
+        Some(cf_str.to_string())
+    }
+
+    /// Map a key character/name to a macOS virtual key code.
+    fn char_to_keycode(s: &str) -> Option<CGKeyCode> {
+        let code: CGKeyCode = match s {
+            "a" => 0,
+            "s" => 1,
+            "d" => 2,
+            "f" => 3,
+            "h" => 4,
+            "g" => 5,
+            "z" => 6,
+            "x" => 7,
+            "c" => 8,
+            "v" => 9,
+            "b" => 11,
+            "q" => 12,
+            "w" => 13,
+            "e" => 14,
+            "r" => 15,
+            "y" => 16,
+            "t" => 17,
+            "1" => 18,
+            "2" => 19,
+            "3" => 20,
+            "4" => 21,
+            "6" => 22,
+            "5" => 23,
+            "9" => 25,
+            "7" => 26,
+            "8" => 28,
+            "0" => 29,
+            "o" => 31,
+            "u" => 32,
+            "i" => 34,
+            "p" => 35,
+            "l" => 37,
+            "j" => 38,
+            "k" => 40,
+            "n" => 45,
+            "m" => 46,
+            "tab" => 48,
+            "return" | "enter" => 0x24,
+            "space" => 0x31,
+            "delete" | "backspace" => 0x33,
+            "escape" | "esc" => 0x35,
+            "left" => 0x7B,
+            "right" => 0x7C,
+            "down" => 0x7D,
+            "up" => 0x7E,
+            _ => return None,
+        };
+        Some(code)
+    }
+
+    pub fn send_key_combo(combo: &str) {
+        let lower = combo.to_lowercase();
+        let parts: Vec<&str> = lower.split('+').collect();
+
+        let mut flags = CGEventFlags::CGEventFlagNull;
+        let mut keycode: Option<CGKeyCode> = None;
+
+        for part in &parts {
+            match part.trim() {
+                "ctrl" | "control" => flags |= CGEventFlags::CGEventFlagControl,
+                "cmd" | "command" | "meta" => flags |= CGEventFlags::CGEventFlagCommand,
+                "alt" | "option" => flags |= CGEventFlags::CGEventFlagAlternate,
+                "shift" => flags |= CGEventFlags::CGEventFlagShift,
+                s => {
+                    if keycode.is_none() {
+                        keycode = char_to_keycode(s);
+                    }
+                }
+            }
+        }
+
+        let vk = match keycode {
+            Some(k) => k,
+            None => {
+                eprintln!("[CE] send_key_combo: '{}' → no key parsed!", combo);
+                return;
+            }
+        };
+
+        eprintln!(
+            "[CE] send_key_combo: '{}' → flags={:?}, keycode={}",
+            combo, flags, vk
+        );
+
+        let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("[CE] send_key_combo: failed to create event source");
+                return;
+            }
+        };
+
+        // Key down
+        if let Ok(down) = CGEvent::new_keyboard_event(source.clone(), vk, true) {
+            if flags != CGEventFlags::CGEventFlagNull {
+                down.set_flags(flags);
+            }
+            down.post(CGEventTapLocation::HID);
+        }
+
+        // Key up
+        if let Ok(up) = CGEvent::new_keyboard_event(source, vk, false) {
+            if flags != CGEventFlags::CGEventFlagNull {
+                up.set_flags(flags);
+            }
+            up.post(CGEventTapLocation::HID);
+        }
+    }
+
+    pub fn focus_window(hwnd: u64) -> bool {
+        // Find the PID for this window ID by re-querying the window list.
+        let windows = list_windows_raw();
+        let pid = windows.iter().find(|w| w.hwnd == hwnd).map(|w| w.pid);
+
+        let pid = match pid {
+            Some(p) => p,
+            None => {
+                eprintln!("[CE] focus_window: window {} not found in list", hwnd);
+                return false;
+            }
+        };
+
+        eprintln!("[CE] focus_window: window={} pid={}", hwnd, pid);
+
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32);
+        match app {
+            Some(app) => {
+                #[allow(deprecated)]
+                let opts = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
+                let result = app.activateWithOptions(opts);
+                eprintln!("[CE] focus_window: activateWithOptions={}", result);
+                result
+            }
+            None => {
+                eprintln!("[CE] focus_window: no NSRunningApplication for pid={}", pid);
+                false
+            }
+        }
+    }
+
+    fn list_windows_raw() -> Vec<WindowInfo> {
+        use core_graphics::window::{
+            kCGWindowBounds, kCGWindowLayer, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName,
+            kCGWindowOwnerPID,
+        };
+
+        let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+        let array = match copy_window_info(options, kCGNullWindowID) {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+
+        let count = array.len() as usize;
+        let mut results = Vec::new();
+
+        for i in 0..count {
+            let raw_ptr: *const c_void = unsafe {
+                CFArrayGetValueAtIndex(array.as_concrete_TypeRef(), i as isize)
+            };
+            if raw_ptr.is_null() {
+                continue;
+            }
+
+            // Each element is a CFDictionary<CFString, CFType>
+            let dict: CFDictionary =
+                unsafe { TCFType::wrap_under_get_rule(raw_ptr as CFDictionaryRef) };
+
+            // Filter: layer 0 = normal windows
+            let layer = dict_i64(&dict, unsafe { kCGWindowLayer });
+            if layer != 0 {
+                continue;
+            }
+
+            // Title (kCGWindowName) — skip if empty or absent
+            let title = match dict_string(&dict, unsafe { kCGWindowName }) {
+                Some(t) if !t.is_empty() => t,
+                _ => continue,
+            };
+
+            // Window ID → hwnd
+            let window_id = dict_i64(&dict, unsafe { kCGWindowNumber }) as u64;
+
+            // Owning PID
+            let pid = dict_i64(&dict, unsafe { kCGWindowOwnerPID }) as u32;
+
+            // App name used as class_name (no window class concept on macOS)
+            let class_name =
+                dict_string(&dict, unsafe { kCGWindowOwnerName }).unwrap_or_default();
+
+            // Bounds — kCGWindowBounds is a nested CFDictionary with X/Y/Width/Height
+            let bounds_raw: *const c_void = unsafe {
+                CFDictionaryGetValue(
+                    dict.as_concrete_TypeRef(),
+                    kCGWindowBounds as *const c_void,
+                )
+            };
+
+            let (x, y, width, height) = if !bounds_raw.is_null() {
+                let bounds: CFDictionary =
+                    unsafe { TCFType::wrap_under_get_rule(bounds_raw as CFDictionaryRef) };
+                let bx = dict_f64(&bounds, "X") as i32;
+                let by = dict_f64(&bounds, "Y") as i32;
+                let bw = dict_f64(&bounds, "Width").max(0.0) as u32;
+                let bh = dict_f64(&bounds, "Height").max(0.0) as u32;
+                (bx, by, bw, bh)
+            } else {
+                (0, 0, 0, 0)
+            };
+
+            // Skip zero-size windows
+            if width == 0 && height == 0 {
+                continue;
+            }
+
+            results.push(WindowInfo {
+                hwnd: window_id,
+                title,
+                pid,
+                x,
+                y,
+                width,
+                height,
+                class_name,
+            });
+        }
+
+        results
+    }
+
+    pub fn list_windows() -> Vec<WindowInfo> {
+        list_windows_raw()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stub implementation (non-Windows, non-macOS)
+// ---------------------------------------------------------------------------
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod platform {
     use super::WindowInfo;
 
