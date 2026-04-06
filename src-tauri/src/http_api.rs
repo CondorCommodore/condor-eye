@@ -13,8 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::audio::{self, SharedTapRegistry};
 use crate::capture::{self, Region};
-use crate::claude;
-use crate::config::{self, AppConfig};
+use crate::config::AppConfig;
 
 /// Shared state for the HTTP API server.
 pub struct HttpState {
@@ -41,14 +40,10 @@ pub struct CaptureRequest {
     /// Requires `hwnd` to resolve window bounds. Ignored if `hwnd` is not set.
     #[serde(default)]
     pub no_focus: bool,
-    /// If true, skip AI description and return raw image only (no API cost).
-    /// Default: true (safe — no charges). Set to false to enable AI description.
-    #[serde(default = "default_true")]
-    pub raw_only: bool,
-}
-
-fn default_true() -> bool {
-    true
+    /// Review provider: "claude", "codex", or "none" (default).
+    /// When "none", capture returns image only with no AI description.
+    #[serde(default)]
+    pub review: crate::review::ReviewProvider,
 }
 
 #[derive(Serialize)]
@@ -337,40 +332,19 @@ async fn handle_capture(
 
     eprintln!("[CE] captured {} bytes, region: {:?}", png.len(), region);
 
-    let image = base64::engine::general_purpose::STANDARD.encode(&png);
-
-    // Raw mode (default): return image only, no AI call, no cost
-    if req.raw_only || prompt.is_empty() {
-        eprintln!("[CE] capture response: raw only (no AI call)");
-        return Ok(Json(CaptureResponse {
-            image,
-            description: String::new(),
-            latency_ms: 0,
-            region,
-            cost_estimate_usd: 0.0,
-        }));
-    }
-
-    // AI mode: explicitly requested via raw_only=false AND prompt set
-    // WARNING: This calls the Anthropic API and costs money
-    if state.config.api_key.is_empty() {
-        return Err(api_error("AI description requested but ANTHROPIC_API_KEY not set. Use raw_only=true for free captures.".to_string()));
-    }
-    eprintln!("[CE] WARNING: AI description requested — calling Anthropic API (costs money)");
+    // Opt-in review via local CLI
     let start = std::time::Instant::now();
-    let description =
-        claude::describe_screenshot(&state.config.api_key, &png, &state.config.model, &prompt)
-            .await
-            .map_err(|e| api_error(format!("Vision: {}", e)))?;
+    let description = crate::review::review_screenshot(req.review, &png, &prompt)
+        .await
+        .map_err(|e| api_error(format!("Review: {}", e)))?;
     let latency_ms = start.elapsed().as_millis() as u64;
 
-    let cost = config::estimate_cost(region.width, region.height, &state.config.model);
+    let image = base64::engine::general_purpose::STANDARD.encode(&png);
 
     eprintln!(
-        "[CE] capture response: {}ms, {} chars, ${:.4}",
+        "[CE] capture response: {}ms, {} chars",
         latency_ms,
-        description.len(),
-        cost
+        description.len()
     );
 
     Ok(Json(CaptureResponse {
@@ -378,80 +352,41 @@ async fn handle_capture(
         description,
         latency_ms,
         region,
-        cost_estimate_usd: cost,
+        cost_estimate_usd: 0.0,
     }))
 }
 
 async fn handle_locate(
-    State(state): State<Arc<HttpState>>,
+    State(_state): State<Arc<HttpState>>,
     Json(req): Json<LocateRequest>,
 ) -> Result<Json<LocateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let _guard = state.capture_lock.lock().await;
+    // Find by window title (free, instant, no AI)
+    let target = req.target.clone();
+    let windows = tokio::task::spawn_blocking(move || {
+        crate::windows::find_windows(&target)
+    })
+    .await
+    .map_err(|e| api_error(format!("Task join: {}", e)))?;
 
-    // Always full-screen for locate
-    let (png, _screen_region) = tokio::task::spawn_blocking(capture::capture_full_screen)
-        .await
-        .map_err(|e| api_error(format!("Task join: {}", e)))?
-        .map_err(|e| api_error(format!("Capture: {}", e)))?;
-
-    eprintln!(
-        "[CE] locate: full screen captured, {} bytes, target: {}",
-        png.len(),
-        req.target
-    );
-
-    // Locate requires AI — check for API key and warn about cost
-    if state.config.api_key.is_empty() {
-        return Err(api_error("/api/locate requires ANTHROPIC_API_KEY — this endpoint calls the Anthropic API (costs money)".to_string()));
-    }
-    eprintln!("[CE] WARNING: /api/locate calls Anthropic API (costs money)");
-
-    let prompt = format!(
-        "You are a screen analysis assistant. Look at this screenshot and find: {}\n\n\
-         Return ONLY a JSON object (no markdown fences) with these fields:\n\
-         - \"found\": boolean — whether you found the target\n\
-         - \"bounds\": object with {{\"x\", \"y\", \"width\", \"height\"}} in pixels, or null if not found\n\
-         - \"confidence\": one of \"high\", \"medium\", \"low\", \"none\"\n\
-         - \"description\": brief description of what you found or why you couldn't find it\n\n\
-         Estimate pixel coordinates based on the image dimensions. Be as accurate as possible.",
-        req.target
-    );
-
-    let start = std::time::Instant::now();
-    let raw =
-        claude::describe_screenshot(&state.config.api_key, &png, &state.config.model, &prompt)
-            .await
-            .map_err(|e| api_error(format!("Vision: {}", e)))?;
-    let latency_ms = start.elapsed().as_millis() as u64;
-
-    eprintln!(
-        "[CE] locate response ({}ms): {}",
-        latency_ms,
-        &raw[..raw.len().min(200)]
-    );
-
-    // Parse the JSON response
-    let cleaned = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-
-    match serde_json::from_str::<LocateResponse>(cleaned) {
-        Ok(resp) => Ok(Json(resp)),
-        Err(_) => {
-            // If parsing fails, return a best-effort response
-            Ok(Json(LocateResponse {
-                found: false,
-                bounds: None,
-                confidence: "none".to_string(),
-                description: format!(
-                    "Failed to parse locate response. Raw: {}",
-                    &raw[..raw.len().min(300)]
-                ),
-            }))
-        }
+    if let Some(w) = windows.first() {
+        Ok(Json(LocateResponse {
+            found: true,
+            bounds: Some(Region {
+                x: w.x,
+                y: w.y,
+                width: w.width,
+                height: w.height,
+            }),
+            confidence: "high".to_string(),
+            description: format!("Found window: {} (pid {})", w.title, w.pid),
+        }))
+    } else {
+        Ok(Json(LocateResponse {
+            found: false,
+            bounds: None,
+            confidence: "none".to_string(),
+            description: format!("No window matching '{}' found", req.target),
+        }))
     }
 }
 

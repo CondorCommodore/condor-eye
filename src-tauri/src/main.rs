@@ -176,23 +176,16 @@ async fn capture_and_compare(
     Ok(report)
 }
 
-/// Free-mode capture — sends screenshot to Claude with a simple prompt, returns raw text.
+/// Free-mode capture — captures screenshot, stores for sharing. No API call.
 #[tauri::command]
 async fn capture_free(
     window: tauri::Window,
     prompt: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    let cfg = state.config.lock().unwrap().clone();
-    let user_prompt = if prompt.is_empty() {
-        "Describe what you see in this screenshot. Be specific about any data, numbers, charts, or UI elements visible.".to_string()
-    } else {
-        prompt
-    };
-
     eprintln!(
         "[VV] free capture: prompt={}",
-        &user_prompt[..user_prompt.len().min(100)]
+        &prompt[..prompt.len().min(100)]
     );
 
     // Hide, capture, show
@@ -210,65 +203,15 @@ async fn capture_free(
     let _ = window.show();
     eprintln!("[VV] free: captured {} bytes", png.len());
 
-    // Send to Claude — raw text response, no JSON parsing
-    let client = reqwest::Client::new();
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png);
-
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "max_tokens": 2000,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": b64,
-                    }
-                },
-                {
-                    "type": "text",
-                    "text": user_prompt,
-                }
-            ]
-        }]
-    });
-
-    let start = std::time::Instant::now();
-    let resp = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &cfg.api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("Network: {}", e))?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API error: {}", text));
-    }
-
-    let api_resp: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let content = api_resp["content"][0]["text"]
-        .as_str()
-        .unwrap_or("(no response)")
-        .to_string();
-
-    let ms = start.elapsed().as_millis();
-    eprintln!("[VV] free response ({}ms):\n{}", ms, content);
 
     // Store for share commands
     *state.last_capture.lock().unwrap() = Some(LastCapture {
-        description: content.clone(),
+        description: String::new(),
         image_b64: b64,
     });
 
-    Ok(content)
+    Ok(format!("Captured {} bytes. Image stored for sharing.", png.len()))
 }
 
 /// Start window drag.
