@@ -380,29 +380,46 @@ async fn share_coord(
 /// Set click-through on the window (transparent areas pass clicks to windows behind).
 #[tauri::command]
 async fn set_click_through(window: tauri::Window, enabled: bool) -> Result<(), String> {
-    use std::os::raw::c_long;
-    #[allow(non_snake_case)]
-    mod win32 {
-        extern "system" {
-            pub fn GetWindowLongW(hWnd: isize, nIndex: i32) -> i32;
-            pub fn SetWindowLongW(hWnd: isize, nIndex: i32, dwNewLong: i32) -> i32;
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(non_snake_case)]
+        mod win32 {
+            extern "system" {
+                pub fn GetWindowLongW(hWnd: isize, nIndex: i32) -> i32;
+                pub fn SetWindowLongW(hWnd: isize, nIndex: i32, dwNewLong: i32) -> i32;
+            }
+            pub const GWL_EXSTYLE: i32 = -20;
+            pub const WS_EX_TRANSPARENT: i32 = 0x00000020;
+            pub const WS_EX_LAYERED: i32 = 0x00080000;
         }
-        pub const GWL_EXSTYLE: i32 = -20;
-        pub const WS_EX_TRANSPARENT: i32 = 0x00000020;
-        pub const WS_EX_LAYERED: i32 = 0x00080000;
+
+        let hwnd = window.hwnd().map_err(|e| format!("No HWND: {}", e))?;
+        let hwnd_val = hwnd.0 as isize;
+
+        unsafe {
+            let style = win32::GetWindowLongW(hwnd_val, win32::GWL_EXSTYLE);
+            let new_style = if enabled {
+                style | win32::WS_EX_TRANSPARENT | win32::WS_EX_LAYERED
+            } else {
+                style & !(win32::WS_EX_TRANSPARENT)
+            };
+            win32::SetWindowLongW(hwnd_val, win32::GWL_EXSTYLE, new_style);
+        }
     }
 
-    let hwnd = window.hwnd().map_err(|e| format!("No HWND: {}", e))?;
-    let hwnd_val = hwnd.0 as isize;
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindow;
+        let ns_ptr = window.ns_window().map_err(|e| format!("No NSWindow: {}", e))?;
+        unsafe {
+            let ns_window = &*(ns_ptr as *const NSWindow);
+            ns_window.setIgnoresMouseEvents(enabled);
+        }
+    }
 
-    unsafe {
-        let style = win32::GetWindowLongW(hwnd_val, win32::GWL_EXSTYLE);
-        let new_style = if enabled {
-            style | win32::WS_EX_TRANSPARENT | win32::WS_EX_LAYERED
-        } else {
-            style & !(win32::WS_EX_TRANSPARENT)
-        };
-        win32::SetWindowLongW(hwnd_val, win32::GWL_EXSTYLE, new_style);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = (window, enabled);
     }
 
     eprintln!("[CE] click-through: {}", if enabled { "ON" } else { "OFF" });
@@ -531,8 +548,13 @@ fn main() {
             set_click_through,
         ])
         .setup(move |app| {
-            // Register Ctrl+Shift+C global shortcut
-            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyC);
+            #[cfg(target_os = "macos")]
+            let platform_mod = Modifiers::META | Modifiers::SHIFT;
+            #[cfg(not(target_os = "macos"))]
+            let platform_mod = Modifiers::CONTROL | Modifiers::SHIFT;
+
+            // Register Ctrl+Shift+C (Cmd+Shift+C on macOS) global shortcut
+            let shortcut = Shortcut::new(Some(platform_mod), Code::KeyC);
             let handle = app.handle().clone();
             if let Err(e) =
                 app.global_shortcut()
@@ -545,9 +567,9 @@ fn main() {
                 eprintln!("Warning: failed to register Ctrl+Shift+C shortcut: {}", e);
             }
 
-            // Register Ctrl+Shift+M to toggle minimal mode
+            // Register Ctrl+Shift+M (Cmd+Shift+M on macOS) to toggle minimal mode
             let min_shortcut =
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyM);
+                Shortcut::new(Some(platform_mod), Code::KeyM);
             let min_handle = app.handle().clone();
             if let Err(e) =
                 app.global_shortcut()
@@ -560,9 +582,9 @@ fn main() {
                 eprintln!("Warning: failed to register Ctrl+Shift+M shortcut: {}", e);
             }
 
-            // Register Ctrl+Shift+T to toggle click-through
+            // Register Ctrl+Shift+T (Cmd+Shift+T on macOS) to toggle click-through
             let ct_shortcut =
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
+                Shortcut::new(Some(platform_mod), Code::KeyT);
             let ct_handle = app.handle().clone();
             if let Err(e) =
                 app.global_shortcut()
@@ -581,16 +603,19 @@ fn main() {
                 ce_config.condor_eye_bind.clone(),
                 ce_config.condor_eye_port,
             ));
-            tauri::async_runtime::spawn(http_api::start_audio_server(
-                ce_config.clone(),
-                ce_config.audio_bind.clone(),
-                ce_config.audio_port,
-                audio_registry.clone(),
-            ));
-            tauri::async_runtime::spawn(audio_watcher::run_watcher(
-                ce_config,
-                audio_registry.clone(),
-            ));
+            #[cfg(target_os = "windows")]
+            {
+                tauri::async_runtime::spawn(http_api::start_audio_server(
+                    ce_config.clone(),
+                    ce_config.audio_bind.clone(),
+                    ce_config.audio_port,
+                    audio_registry.clone(),
+                ));
+                tauri::async_runtime::spawn(audio_watcher::run_watcher(
+                    ce_config,
+                    audio_registry.clone(),
+                ));
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -29,5 +29,12 @@ time = { version = "0.3", features = ["parsing", "formatting"] }
 wasapi = "0.22"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSRunningApplication", "NSApplication"] }
+objc2-foundation = "0.3"
+core-graphics = "0.24"
+core-foundation = "0.10"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
