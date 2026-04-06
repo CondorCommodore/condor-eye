@@ -560,6 +560,29 @@ fn main() {
                     audio_registry.clone(),
                 ));
             }
+
+            // macOS: check screen recording permission on startup
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Brief delay to let window initialize
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    match tokio::task::spawn_blocking(|| {
+                        capture::capture_region(0, 0, 1, 1)
+                    }).await {
+                        Ok(Ok(_)) => {
+                            eprintln!("[CE] Screen recording permission: OK");
+                        }
+                        _ => {
+                            eprintln!("[CE] WARNING: Screen recording permission not granted");
+                            if let Some(window) = handle.get_webview_window("main") {
+                                let _ = window.emit("permission-needed", "screen-recording");
+                            }
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

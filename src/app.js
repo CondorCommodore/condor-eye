@@ -27,6 +27,19 @@ appWindow.listen('toggle-click-through', () => {
   setClickThrough(!clickThrough);
 });
 
+// macOS: listen for permission warnings
+appWindow.listen('permission-needed', (event) => {
+  const msg = event.payload === 'screen-recording'
+    ? 'Screen Recording permission needed. Go to System Settings → Privacy & Security → Screen Recording and enable Condor Eye.'
+    : `Permission needed: ${event.payload}`;
+  const results = document.getElementById('results');
+  if (results) {
+    results.textContent = msg;
+    results.style.color = '#ff6b6b';
+  }
+  console.warn(`[CE] ${msg}`);
+});
+
 // Ctrl+Shift+M toggles minimal mode (just the blue border)
 let minimalMode = false;
 appWindow.listen('toggle-minimal', () => {
