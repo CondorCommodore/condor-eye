@@ -27,14 +27,19 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "app"],
     "icon": [
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.icns",
+      "icons/icon.png"
     ],
     "windows": {
       "nsis": {
         "installMode": "currentUser"
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0"
     }
   }
 }

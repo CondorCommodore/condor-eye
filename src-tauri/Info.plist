@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Condor Eye needs screen recording access to capture screen regions for analysis.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Condor Eye needs accessibility access for global hotkeys and window management.</string>
+</dict>
+</plist>
