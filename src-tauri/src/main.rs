@@ -409,7 +409,7 @@ async fn set_click_through(window: tauri::Window, enabled: bool) -> Result<(), S
     Ok(())
 }
 
-/// Load grid config from %APPDATA%/Condor Eye/grid.json via IPC (bypasses CSP).
+/// Load grid config from the platform config dir (Condor Eye/grid.json) via IPC (bypasses CSP).
 #[tauri::command]
 async fn load_grid_config() -> Result<serde_json::Value, String> {
     let path = crate::http_api::grid_config_path();
@@ -418,7 +418,7 @@ async fn load_grid_config() -> Result<serde_json::Value, String> {
     serde_json::from_str(&data).map_err(|e| format!("Parse grid config: {}", e))
 }
 
-/// Save grid config to %APPDATA%/Condor Eye/grid.json via IPC (bypasses CSP).
+/// Save grid config to the platform config dir (Condor Eye/grid.json) via IPC (bypasses CSP).
 #[tauri::command]
 async fn save_grid_config(config: serde_json::Value) -> Result<(), String> {
     let path = crate::http_api::grid_config_path();
@@ -457,16 +457,12 @@ fn main() {
     // Load .env file — first file to set a variable wins (dotenvy skips existing):
     // 1. cwd/.env (dev mode — highest priority)
     // 2. cwd/../.env (dev from src-tauri/)
-    // 3. %APPDATA%/Condor Eye/.env (installed app — persistent config)
+    // 3. platform config dir / Condor Eye/.env (installed app — persistent config)
     // 4. Next to the exe (fallback)
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("../.env");
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let _ = dotenvy::from_path(
-            std::path::Path::new(&appdata)
-                .join("Condor Eye")
-                .join(".env"),
-        );
+    if let Some(config_dir) = dirs::config_dir() {
+        let _ = dotenvy::from_path(config_dir.join("Condor Eye").join(".env"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

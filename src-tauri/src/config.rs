@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -87,14 +86,13 @@ impl AppConfig {
 }
 
 fn default_audio_output_dir() -> String {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        return Path::new(&local_app_data)
+    if let Some(data_dir) = dirs::data_local_dir() {
+        return data_dir
             .join("condor_audio")
             .join("audio-taps")
             .to_string_lossy()
             .into_owned();
     }
-
     std::env::temp_dir()
         .join("condor_audio")
         .join("audio-taps")
