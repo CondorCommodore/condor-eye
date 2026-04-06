@@ -7,6 +7,7 @@ mod claude;
 mod compare;
 mod config;
 mod http_api;
+mod review;
 mod truth;
 mod windows;
 
