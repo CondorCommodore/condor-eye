@@ -322,8 +322,9 @@ async fn share_coord(
 }
 
 /// Set click-through on the window (transparent areas pass clicks to windows behind).
+/// Non-async so Tauri runs it on the main thread (required for NSWindow on macOS).
 #[tauri::command]
-async fn set_click_through(window: tauri::Window, enabled: bool) -> Result<(), String> {
+fn set_click_through(window: tauri::Window, enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         #[allow(non_snake_case)]

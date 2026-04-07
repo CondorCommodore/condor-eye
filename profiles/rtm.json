@@ -1,0 +1,10 @@
+{
+  "name": "rtm",
+  "prompt": "Analyze this RTM (Real-Time Marker) trading chart. Extract ALL visible box prints and horizontal level lines.\n\nReturn a JSON object with this exact structure:\n{\n  \"symbol\": \"ES or /ES or detected symbol\",\n  \"date\": \"YYYY-MM-DD (from chart date if visible)\",\n  \"boxes\": [\n    {\n      \"time_et\": \"HH:MM\",\n      \"price\": 6500.25,\n      \"color\": \"blue|red|green|yellow|orange|purple|unknown\",\n      \"number\": \"7020 or null if not visible\",\n      \"dash_tag\": \"-2- or null if not a dash-tagged box\"\n    }\n  ],\n  \"lines\": [\n    {\n      \"label\": \"Strongest Morning Level or Strongest Afternoon Level or other\",\n      \"start_time\": \"HH:MM\",\n      \"price\": 6500.25\n    }\n  ],\n  \"price_range\": {\"min\": 6400.0, \"max\": 6600.0},\n  \"confidence\": \"high|medium|low\",\n  \"notes\": \"any observations\"\n}\n\nRules:\n- Boxes are small colored rectangles or markers at specific price/time locations\n- Extract the EXACT price and time for each box as read from the chart axes\n- Color is critical — blue and red boxes have different meanings\n- Dash-tagged boxes have a \"-2-\" label near them — these are directional signals\n- Lines labeled \"Strongest Morning Level\" (SML) or \"Strongest Afternoon Level\" (SAL) are key anchor prices\n- Times should be in Eastern Time (ET) as shown on the x-axis\n- Prices should match the y-axis scale exactly\n- If a box or line is partially obscured, include it with your best estimate and note low confidence\n- Return ONLY the JSON object, no other text",
+  "truthSource": {
+    "type": "none"
+  },
+  "comparison": {
+    "priceToleranceMode": "fixed"
+  }
+}
