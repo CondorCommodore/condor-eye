@@ -445,11 +445,20 @@ async fn handle_screenshot(
             .map_err(|e| api_error(format!("Capture: {}", e)))?
     };
 
+    // Auto-save to ~/Downloads/condor-eye-latest.png for local consumption
+    let save_path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("Downloads")
+        .join("condor-eye-latest.png");
+    let _ = std::fs::write(&save_path, &png);
+    eprintln!("[CE] screenshot saved to {}", save_path.display());
+
     let image = base64::engine::general_purpose::STANDARD.encode(&png);
     Ok(Json(serde_json::json!({
         "image": image,
         "region": { "x": region.x, "y": region.y, "width": region.width, "height": region.height },
         "size_bytes": png.len(),
+        "saved_to": save_path.to_string_lossy(),
     })))
 }
 
@@ -510,6 +519,35 @@ async fn handle_vision_proxy() -> Result<Json<serde_json::Value>, (StatusCode, J
     Ok(Json(body))
 }
 
+// ── Snap — capture and save to disk, return path (no base64 payload) ──
+
+async fn handle_snap(
+    State(state): State<Arc<HttpState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let _guard = state.capture_lock.lock().await;
+
+    let (png, region) = tokio::task::spawn_blocking(capture::capture_full_screen)
+        .await
+        .map_err(|e| api_error(format!("Task join: {}", e)))?
+        .map_err(|e| api_error(format!("Capture: {}", e)))?;
+
+    let save_path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("Downloads")
+        .join("condor-eye-latest.png");
+    std::fs::write(&save_path, &png)
+        .map_err(|e| api_error(format!("Save: {}", e)))?;
+
+    eprintln!("[CE] snap saved to {}", save_path.display());
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "path": save_path.to_string_lossy(),
+        "size_bytes": png.len(),
+        "region": { "x": region.x, "y": region.y, "width": region.width, "height": region.height },
+    })))
+}
+
 // ── Server startup ──
 
 pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
@@ -534,6 +572,7 @@ pub async fn start_server(config: AppConfig, bind_addr: String, port: u16) {
         .route("/api/windows", get(handle_windows))
         .route("/api/vision", get(handle_vision_proxy))
         .route("/api/screenshot", post(handle_screenshot))
+        .route("/api/snap", get(handle_snap))
         .route("/api/grid", get(handle_grid_load))
         .route("/api/grid", post(handle_grid_save))
         .with_state(state);

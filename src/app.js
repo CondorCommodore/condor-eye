@@ -14,13 +14,13 @@ let gridActive = false;
 // Click-through: transparent areas pass clicks to windows behind.
 // Toggle with Ctrl+Shift+T or toolbar button. When ON, you can't click CE UI.
 // Use the global shortcut Ctrl+Shift+C to capture, or Ctrl+Shift+T to toggle back.
-let clickThrough = true; // start click-through so Bookmap is usable
+let clickThrough = false; // start interactive so window is grabbable
 async function setClickThrough(enabled) {
   clickThrough = enabled;
   try { await invoke('set_click_through', { enabled }); } catch {}
 }
-// Enable click-through on startup after window initializes
-setTimeout(() => setClickThrough(true), 500);
+// Start with click-through OFF so the window is interactive
+setTimeout(() => setClickThrough(false), 500);
 
 // Ctrl+Shift+T toggles click-through
 appWindow.listen('toggle-click-through', () => {
