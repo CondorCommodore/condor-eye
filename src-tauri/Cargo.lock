@@ -530,6 +530,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "time",
  "tokio",
+ "tower-http",
  "wasapi",
 ]
 
