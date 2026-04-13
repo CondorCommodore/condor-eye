@@ -235,7 +235,7 @@ async function getCaptureToken() {
   if (_captureToken) return _captureToken;
   try {
     const { execFileSync } = await import("child_process");
-    _captureToken = execFileSync("op.exe", ["read", "op://Dev/condor-eye-capture/token"], { encoding: "utf-8" }).trim();
+    _captureToken = execFileSync("op.exe", ["read", "op://HomeLab/condor-eye-capture/token"], { encoding: "utf-8" }).trim();
     return _captureToken;
   } catch {
     throw new Error("Failed to read capture token from 1Password. Run: op.exe signin");
